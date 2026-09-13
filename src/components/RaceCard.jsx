@@ -30,6 +30,8 @@ export default function RaceCard({ race }) {
         {race.condition ? `・馬場${race.condition}` : ""}・{race.headCount}頭
       </p>
 
+      {race.payback && <PaybackPanel payback={race.payback} />}
+
       {!noDifferentiation ? (
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3 px-3 py-2" style={{ background: PAPER_CARD, border: `1.5px solid ${INK}` }}>
           {MARKS.flatMap((m) => scored.filter((h) => marksByUmaban[h.umaban] === m)).map((h) => (
@@ -156,8 +158,6 @@ export default function RaceCard({ race }) {
           );
         })}
       </div>
-
-      {race.payback && <PaybackPanel payback={race.payback} />}
     </div>
   );
 }
@@ -172,7 +172,7 @@ function PaybackPanel({ payback }) {
     ["3連単", `${payback["３連単組番馬番1"]}→${payback["３連単組番馬番2"]}→${payback["３連単組番馬番3"]}`, payback["３連単払戻金（円）"]],
   ];
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 px-3 py-2 text-xs" style={{ background: PAPER_CARD, border: `1.5px solid ${INK}` }}>
+    <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3 px-3 py-2 text-xs" style={{ background: PAPER_CARD, border: `1.5px solid ${INK}` }}>
       {rows.map(([label, combo, yen]) =>
         yen ? (
           <span key={label} style={{ color: INK }}>
