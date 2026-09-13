@@ -163,11 +163,72 @@ export function handicapWeightAdjustment(isHandicap, weight, fieldAvgWeight) {
   return { label: `斤量${weight}kg`, score };
 }
 
+function toHalfWidth(str) {
+  return str.replace(/[Ａ-Ｚａ-ｚ０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+}
+
+// 地方競馬のレース名には「Ｃ２－５組」「Ｂ４－５」「Ｃ３三３歳以上」のように
+// トラックごとにばらばらな書式でクラス表記が入っている(A/B/C/Dの文字クラス+任意の数字、
+// 区切りはダッシュだったり組番の漢数字だったりバラバラ)。「ＪＲＡ認定」のように
+// A/B/C/Dを含むが実際はクラス表記ではない文字列もあるため、前後が別の大文字英字
+// (＝「ＪＲＡ」のような連続した頭文字語の一部)である場合は候補から除外する。
+// 複数のクラス表記が出てくる交流戦等は最後に見つかったものを採用する(ベストエフォート)。
+// クラス内の「一組・二組」等の組番も一組の方が格上という序列があるため、
+// 文字クラス×100 + 数字×10 + 組番、の合成値にして格上ほど小さい値になるようにする
+// (数字・組番とも小さいほど格上)。クラス表記が見つからなければnullを返す。
+const CLASS_LETTER_RANK = { A: 0, B: 1, C: 2, D: 3 };
+const KANJI_NUM = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+export function parseClassRank(raceName) {
+  if (!raceName) return null;
+  const normalized = toHalfWidth(raceName);
+  const isUpper = (ch) => ch != null && /[A-Z]/.test(ch);
+  const re = /([ABCD])(\d)?/g;
+  let m;
+  let result = null;
+  while ((m = re.exec(normalized)) !== null) {
+    const before = normalized[m.index - 1];
+    const afterIdx = m.index + m[0].length;
+    const after = normalized[afterIdx];
+    if (isUpper(before) || isUpper(after)) continue;
+    const classNum = m[2] ? Number(m[2]) : 1;
+
+    // 組番: 「Ｃ３一」のように直後の漢数字、または「Ｃ４－２」のようにダッシュ+数字。
+    let group = 0;
+    if (after != null && KANJI_NUM[after] != null) {
+      group = KANJI_NUM[after] - 1;
+    } else if ((after === "-" || after === "－") && /\d/.test(normalized[afterIdx + 1] || "")) {
+      group = Number(normalized.slice(afterIdx + 1).match(/^\d+/)[0]) - 1;
+    }
+
+    result = CLASS_LETTER_RANK[m[1]] * 100 + classNum * 10 + group;
+  }
+  return result;
+}
+
+// 今回のレースのクラスが、直近走(平均)よりも格上/格下かで補正する。格下げ(通用度の
+// 高いクラスへ移った)なら加点、格上げなら減点。クラス表記が今回・過去走のどちらかで
+// 読み取れない場合は判定しない。
+export function classChangeAdjustment(currentClassRank, pastRaces) {
+  if (currentClassRank == null) return null;
+  const pastRanks = (pastRaces || [])
+    .filter((r) => r.league !== "JRA") // JRAはクラス体系が別物なので比較対象に含めない
+    .map((r) => parseClassRank(r.raceName))
+    .filter((v) => v != null);
+  if (pastRanks.length === 0) return null;
+
+  const avgPastRank = pastRanks.reduce((a, b) => a + b, 0) / pastRanks.length;
+  const diff = currentClassRank - avgPastRank; // 正なら今回の方が格下(数値が大きい=格下)
+  const score = Math.max(-3, Math.min(3, Math.round(diff * 1.5)));
+  if (score === 0) return null;
+  return { label: diff > 0 ? "クラス格下げ" : "クラス格上げ", score };
+}
+
 // レース1つ分の出走馬全頭を採点し、合計点(total)の高い順に並べて返す。
 export function scoreRace(race) {
   const isHandicap = /ハンデ/.test(race.entryCondition || "");
   const weights = race.horses.map((h) => parseWeight(h.weight)).filter((w) => w != null);
   const fieldAvgWeight = weights.length ? weights.reduce((a, b) => a + b, 0) / weights.length : null;
+  const currentClassRank = parseClassRank(race.name);
 
   const scored = race.horses.map((h) => {
     const overall = baseScoreFromOverall(h.overallStats);
@@ -184,6 +245,8 @@ export function scoreRace(race) {
     if (bodyWeight) applied.push(bodyWeight);
     const handicap = handicapWeightAdjustment(isHandicap, parseWeight(h.weight), fieldAvgWeight);
     if (handicap) applied.push(handicap);
+    const classChange = classChangeAdjustment(currentClassRank, h.pastRaces);
+    if (classChange) applied.push(classChange);
 
     const bonus = applied.reduce((sum, a) => sum + a.score, 0);
     const recentForm = (h.pastRaces || []).slice(0, 5).map((r) => ({ result: r.result, league: r.league }));

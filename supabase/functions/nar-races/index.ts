@@ -106,7 +106,7 @@ type RaceFiles = {
   odds?: Record<string, string>[];
 };
 
-type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string; money: number; league: "NAR" | "JRA" };
+type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string; money: number; league: "NAR" | "JRA"; raceName?: string };
 
 async function supabaseSelect(table: string, params: string): Promise<Record<string, string>[]> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
@@ -219,7 +219,7 @@ async function fetchNarHistoryMap(entrants: { name: string; birth: string }[], b
     for (let i = 0; i < uniqueNames.length; i += 100) {
       const batch = uniqueNames.slice(i, i + 100);
       const inList = batch.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(",");
-      const params = `bamei=in.(${encodeURIComponent(inList)})&race_date=lt.${beforeDate}&select=bamei,seinengappi,race_date,chakujun,time,agari_3f,ninki,shokin&order=race_date.desc&limit=1000`;
+      const params = `bamei=in.(${encodeURIComponent(inList)})&race_date=lt.${beforeDate}&select=bamei,seinengappi,race_date,chakujun,time,agari_3f,ninki,shokin,race_name&order=race_date.desc&limit=1000`;
       const batchRows = await supabaseSelect("nar_race_history", params);
       rows.push(...batchRows);
     }
@@ -236,6 +236,7 @@ async function fetchNarHistoryMap(entrants: { name: string; birth: string }[], b
         ninki: r["ninki"] || "",
         money: Number(r["shokin"]) || 0,
         league: "NAR",
+        raceName: r["race_name"] || "",
       });
     });
     Object.values(map).forEach((arr) => arr.sort((a, b) => (a.date < b.date ? 1 : -1)));
@@ -270,25 +271,34 @@ async function fetchMonthly(year: number, month: number): Promise<RaceFiles> {
   };
 }
 
-// レース一覧から「そのレースの着順ごとの賞金額」の索引を作る(1〜5着賞金(円))。
-function buildPrizeLookup(racelistRows: Record<string, string>[]): Record<string, number[]> {
-  const map: Record<string, number[]> = {};
+// レース一覧から「そのレースの着順ごとの賞金額」+「レース名」の索引を作る。
+// レース名にはクラス表記(例:Ｃ２－５組、Ｂ４－５)が入っているため、クラス変動の
+// 判定材料として保存しておく(パース自体はフロント側のscoring.jsで行う)。
+function buildRaceInfoLookup(racelistRows: Record<string, string>[]): Record<string, { prizes: number[]; name: string }> {
+  const map: Record<string, { prizes: number[]; name: string }> = {};
   racelistRows.forEach((r) => {
     const key = raceKeyOf(r["競馬場"], r["競走年月日"], r["レース番号"]);
-    map[key] = [1, 2, 3, 4, 5].map((n) => Number(r[`${n}着賞金(円)`]) || 0);
+    map[key] = {
+      prizes: [1, 2, 3, 4, 5].map((n) => Number(r[`${n}着賞金(円)`]) || 0),
+      name: r["レース名"] || "",
+    };
   });
   return map;
 }
 
 // 対象日に確定した結果をnar_race_historyに書き足す。次回以降この日を過去走として
 // 引けるようにするため(=DBが使うたびに育っていく)。
-async function saveTodayResultsToHistory(horselistRows: Record<string, string>[], prizeLookup: Record<string, number[]>, targetDate: string) {
+async function saveTodayResultsToHistory(
+  horselistRows: Record<string, string>[],
+  raceInfoLookup: Record<string, { prizes: number[]; name: string }>,
+  targetDate: string
+) {
   const rows = horselistRows
     .map((h) => {
       const finish = Number(h["着順"]);
       if (!Number.isFinite(finish) || finish <= 0) return null;
-      const prizes = prizeLookup[raceKeyOf(h["競馬場"], targetDate, h["レース番号"])];
-      const shokin = prizes && finish <= 5 ? prizes[finish - 1] : 0;
+      const info = raceInfoLookup[raceKeyOf(h["競馬場"], targetDate, h["レース番号"])];
+      const shokin = info && finish <= 5 ? info.prizes[finish - 1] : 0;
       return {
         bamei: h["馬名"],
         seinengappi: h["生年月日"],
@@ -300,6 +310,7 @@ async function saveTodayResultsToHistory(horselistRows: Record<string, string>[]
         agari_3f: h["上がり3F"] || null,
         ninki: h["人気"] || null,
         shokin,
+        race_name: info?.name || null,
       };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null);
@@ -428,8 +439,8 @@ async function getRacesForDate(dateStr: string) {
   // Edge Functionはレスポンスを返すとバックグラウンド処理が打ち切られることがあるため、
   // 完了を待ってから返す(失敗しても本体のレース情報取得は失敗させない)。
   const targetRacelistRows = files.racelist.filter((r) => r["競走年月日"] === dateStr);
-  const targetPrizeLookup = buildPrizeLookup(targetRacelistRows);
-  await saveTodayResultsToHistory(targetHorselistRows, targetPrizeLookup, dateStr).catch((err) =>
+  const targetRaceInfoLookup = buildRaceInfoLookup(targetRacelistRows);
+  await saveTodayResultsToHistory(targetHorselistRows, targetRaceInfoLookup, dateStr).catch((err) =>
     console.error("saveTodayResultsToHistory failed:", err)
   );
 
