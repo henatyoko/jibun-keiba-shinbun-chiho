@@ -25,3 +25,13 @@ export function formatPostTime(hhmm) {
   const padded = hhmm.padStart(4, "0");
   return `${padded.slice(0, 2)}:${padded.slice(2, 4)}`;
 }
+
+// "1343"(1分34秒3)のような区切りなしのタイム文字列を"1:34.3"に整形する
+export function formatRaceTime(raw) {
+  if (!raw) return null;
+  const digits = String(raw).padStart(4, "0");
+  const minute = Number(digits.slice(0, digits.length - 3));
+  const seconds = digits.slice(digits.length - 3, digits.length - 1);
+  const decisecond = digits.slice(-1);
+  return `${minute}:${seconds}.${decisecond}`;
+}

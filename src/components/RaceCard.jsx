@@ -1,7 +1,8 @@
 import { useMemo } from "react";
-import { formatPostTime } from "../lib/date";
+import { formatPostTime, formatRaceTime } from "../lib/date";
 import { PAPER_CARD, INK, RED, MUTED, LINE, MARKS } from "../lib/colors";
 import { scoreRace, computeMarks } from "../lib/scoring";
+import GradeChip from "./GradeChip";
 import WakuBadge from "./WakuBadge";
 
 export default function RaceCard({ race }) {
@@ -10,137 +11,132 @@ export default function RaceCard({ race }) {
 
   if (!race) return null;
   const surfaceLabel = race.surface && race.distance ? `${race.surface}${race.distance}m${race.turn ? `(${race.turn})` : ""}` : "";
-  const scoreByUmaban = Object.fromEntries(scored.map((h) => [h.umaban, h]));
 
   return (
-    <div style={{ border: `1.5px solid ${INK}`, background: PAPER_CARD }}>
-      <div className="p-3" style={{ background: INK }}>
-        <div className="flex items-baseline gap-2" style={{ fontFamily: "'Shippori Mincho', serif" }}>
-          <span className="text-xl font-black" style={{ color: PAPER_CARD }}>
-            {race.raceNumber}R
-          </span>
-          <span className="flex-1 text-[0.9375rem] font-bold truncate" style={{ color: PAPER_CARD }}>
-            {race.name || race.kind}
-          </span>
-          <span className="text-xs" style={{ color: PAPER_CARD, opacity: 0.85 }}>
-            {formatPostTime(race.postTime)}発走
-          </span>
-        </div>
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[0.625rem]" style={{ color: PAPER_CARD, opacity: 0.85 }}>
-          <span>{surfaceLabel}</span>
-          {race.entryCondition && <span>{race.entryCondition}</span>}
-          {race.weather && <span>天候:{race.weather}</span>}
-          {race.condition && <span>馬場:{race.condition}</span>}
-          <span>{race.headCount}頭</span>
-        </div>
+    <div>
+      <div className="flex items-center gap-2 mb-1">
+        <GradeChip grade={race.kind} />
+        <span className="text-xs" style={{ color: MUTED }}>
+          {formatPostTime(race.postTime)}発走
+        </span>
       </div>
+      <h1 className="text-xl font-bold mb-1" style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}>
+        {race.name || race.kind}
+      </h1>
+      <p className="text-xs mb-3" style={{ color: MUTED }}>
+        {race.venue}{race.raceNumber}R・{surfaceLabel}
+        {race.entryCondition ? `・${race.entryCondition}` : ""}
+        {race.weather ? `・天候${race.weather}` : ""}
+        {race.condition ? `・馬場${race.condition}` : ""}・{race.headCount}頭
+      </p>
 
-      {!noDifferentiation && (
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2" style={{ background: "#F3E4C8", borderBottom: `1.5px solid ${INK}` }}>
+      {!noDifferentiation ? (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-3 px-3 py-2" style={{ background: PAPER_CARD, border: `1.5px solid ${INK}` }}>
           {MARKS.flatMap((m) => scored.filter((h) => marksByUmaban[h.umaban] === m)).map((h) => (
             <span key={h.umaban} className="font-black" style={{ fontSize: "1rem", fontFamily: "'Shippori Mincho', serif", color: marksByUmaban[h.umaban] === MARKS[0] ? RED : INK }}>
               {marksByUmaban[h.umaban]}
-              {h.umaban} {h.name}
+              {h.umaban}
             </span>
           ))}
         </div>
-      )}
-      {noDifferentiation && (
-        <p className="px-3 py-1.5 text-[0.625rem]" style={{ color: MUTED, borderBottom: `1px solid ${LINE}` }}>
+      ) : (
+        <p className="text-xs px-2 py-1 mb-3" style={{ color: MUTED, border: `1px dashed ${MUTED}` }}>
           判断材料(通算成績)が乏しいため印は付けていません
         </p>
       )}
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs whitespace-nowrap" style={{ borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#F3E4C8" }}>
-              {["印", "枠", "馬番", "馬名", "性齢", "斤量", "騎手", "調教師", "馬体重", "全成績", "当場成績", "当距離", "単勝", "人気"].map((h) => (
-                <th key={h} className="px-2 py-1.5 font-bold" style={{ color: INK, borderBottom: `1.5px solid ${INK}` }}>
-                  {h}
-                </th>
-              ))}
-              {race.isFinished &&
-                ["着順", "タイム", "上3F"].map((h) => (
-                  <th key={h} className="px-2 py-1.5 font-bold" style={{ color: INK, borderBottom: `1.5px solid ${INK}` }}>
-                    {h}
-                  </th>
-                ))}
-            </tr>
-          </thead>
-          <tbody>
-            {race.horses.map((h, i) => {
-              const isWin = h.result === "1" || h.result === 1;
-              const mark = marksByUmaban[h.umaban];
-              const applied = scoreByUmaban[h.umaban]?.applied ?? [];
-              const rationale = applied.length ? applied.map((a) => `${a.label}:${a.score > 0 ? "+" : ""}${a.score}`).join(" / ") : "補正材料なし";
-              return (
-                <tr key={h.umaban} style={{ background: isWin ? "#F3E4C8" : PAPER_CARD, borderBottom: i < race.horses.length - 1 ? `1px solid ${LINE}` : "none" }}>
-                  <td className="px-2 py-1.5 text-center font-black" style={{ color: mark === MARKS[0] ? RED : INK, fontFamily: "'Shippori Mincho', serif" }} title={rationale}>
-                    {mark || "―"}
-                  </td>
-                  <td className="px-2 py-1.5 text-center">
-                    <WakuBadge num={h.waku} waku={h.waku} />
-                  </td>
-                  <td className="px-2 py-1.5 text-center font-bold" style={{ color: INK }}>
-                    {h.umaban}
-                  </td>
-                  <td className="px-2 py-1.5 text-left font-bold" style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}>
-                    {h.name}
-                  </td>
-                  <td className="px-2 py-1.5 text-center" style={{ color: INK }}>
-                    {h.sex}
-                    {h.age}
-                  </td>
-                  <td className="px-2 py-1.5 text-center" style={{ color: INK }}>
-                    {h.weight}
-                  </td>
-                  <td className="px-2 py-1.5 text-left" style={{ color: INK }}>
-                    {h.jockey}
-                  </td>
-                  <td className="px-2 py-1.5 text-left" style={{ color: INK }}>
-                    {h.trainer}
-                  </td>
-                  <td className="px-2 py-1.5 text-center" style={{ color: MUTED }}>
-                    {h.bodyWeight || "―"}
-                    {h.bodyWeightDiff ? `(${h.bodyWeightDiff})` : ""}
-                  </td>
-                  <td className="px-2 py-1.5 text-center" style={{ color: MUTED }}>
-                    {h.overallStats || "―"}
-                  </td>
-                  <td className="px-2 py-1.5 text-center" style={{ color: MUTED }}>
-                    {h.trackStats || "―"}
-                  </td>
-                  <td className="px-2 py-1.5 text-center" style={{ color: MUTED }}>
-                    {h.distanceStats || "―"}
-                  </td>
-                  <td className="px-2 py-1.5 text-center font-bold" style={{ color: INK }}>
-                    {h.odds || "―"}
-                  </td>
-                  <td className="px-2 py-1.5 text-center" style={{ color: MUTED }}>
-                    {h.ninki || "―"}
-                  </td>
-                  {race.isFinished && (
-                    <>
-                      <td
-                        className="px-2 py-1.5 text-center font-black"
-                        style={{ color: h.result === "1" ? RED : h.result ? INK : MUTED, fontFamily: "'Shippori Mincho', serif" }}
-                      >
-                        {h.result || "―"}
-                      </td>
-                      <td className="px-2 py-1.5 text-center" style={{ color: MUTED }}>
-                        {h.result ? h.time || "―" : "―"}
-                      </td>
-                      <td className="px-2 py-1.5 text-center" style={{ color: MUTED }}>
-                        {h.result ? h.last3f || "―" : "―"}
-                      </td>
-                    </>
+      <div style={{ border: `1.5px solid ${INK}` }}>
+        {scored.map((h, i) => {
+          const mark = marksByUmaban[h.umaban] || "";
+          const isTop = mark === MARKS[0];
+          return (
+            <div
+              key={h.umaban}
+              className="p-2.5"
+              style={{
+                background: isTop ? "#F3E4C8" : PAPER_CARD,
+                borderBottom: i < scored.length - 1 ? `1px solid ${LINE}` : "none",
+              }}
+            >
+              <div className="flex items-start gap-2 mb-1.5">
+                <div className="font-black w-6 text-center shrink-0" style={{ color: isTop ? RED : INK, fontFamily: "'Shippori Mincho', serif", fontSize: "20px" }}>
+                  {mark}
+                </div>
+                <WakuBadge num={h.umaban} waku={h.waku} />
+                <div className="flex-1 min-w-0">
+                  {h.result && (
+                    <div className="font-black text-sm" style={{ color: h.result === "1" ? RED : Number(h.result) <= 3 ? INK : MUTED, fontFamily: "'Shippori Mincho', serif" }}>
+                      {h.result}着
+                    </div>
                   )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  <div className="font-bold text-[0.9375rem]" style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}>
+                    {h.name}
+                  </div>
+                  <div className="text-[0.625rem]" style={{ color: MUTED }}>
+                    {h.sex}
+                    {h.age}歳・{h.jockey}・斤量{h.weight}
+                    {h.trainer ? `・${h.trainer}厩舎` : ""}
+                  </div>
+                  <div className="text-[0.625rem] mt-0.5" style={{ color: MUTED }}>
+                    全成績{h.overallStats || "―"}・当場{h.trackStats || "―"}・当距離{h.distanceStats || "―"}
+                    {h.bodyWeight ? `・馬体重${h.bodyWeight}kg${h.bodyWeightDiff ? `(${h.bodyWeightDiff})` : ""}` : ""}
+                  </div>
+                </div>
+                <div className="text-right shrink-0 w-12">
+                  <div className="text-xl font-black tabular-nums" style={{ color: isTop ? RED : INK, fontFamily: "'Shippori Mincho', serif" }}>
+                    {h.total}
+                  </div>
+                  <div className="text-[0.5625rem]" style={{ color: MUTED }}>
+                    {h.hasData ? `基礎${h.base}` : "基礎データなし"}
+                  </div>
+                </div>
+              </div>
+
+              {(h.result || h.odds) && (
+                <div className="flex items-start gap-2 mb-1.5">
+                  <div className="w-6 shrink-0" aria-hidden="true" />
+                  <div style={{ width: 28 }} className="shrink-0" aria-hidden="true" />
+                  <div className="text-[0.625rem] font-bold flex-1 min-w-0" style={{ color: h.result === "1" ? RED : h.result ? INK : MUTED }}>
+                    {h.result ? (
+                      <>
+                        タイム{formatRaceTime(h.time) || "―"}
+                        {h.last3f ? `(上3F${h.last3f})` : ""}
+                      </>
+                    ) : (
+                      "オッズ:"
+                    )}
+                    {h.odds && (
+                      <span className="font-normal" style={{ color: MUTED }}>
+                        {" "}
+                        {h.odds}倍{h.ninki ? `(${h.ninki}人気)` : ""}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {(!h.hasData || h.applied.length > 0) && (
+                <div className="flex items-start gap-2">
+                  <div className="w-6 shrink-0" aria-hidden="true" />
+                  <div style={{ width: 28 }} className="shrink-0" aria-hidden="true" />
+                  <div className="flex flex-wrap gap-1.5 flex-1">
+                    {!h.hasData && (
+                      <span className="text-[0.625rem] px-1.5 py-0.5 font-semibold" style={{ border: `1px dashed ${MUTED}`, color: MUTED }}>
+                        評価データなし・他の補正のみ反映
+                      </span>
+                    )}
+                    {h.applied.map((a, i) => (
+                      <span key={i} className="text-[0.625rem] px-1.5 py-0.5 font-semibold" style={{ border: `1px solid ${a.score > 0 ? INK : RED}`, color: a.score > 0 ? INK : RED }}>
+                        {a.label} {a.score > 0 ? "+" : ""}
+                        {a.score}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {race.payback && <PaybackPanel payback={race.payback} />}
@@ -158,7 +154,7 @@ function PaybackPanel({ payback }) {
     ["3連単", `${payback["３連単組番馬番1"]}→${payback["３連単組番馬番2"]}→${payback["３連単組番馬番3"]}`, payback["３連単払戻金（円）"]],
   ];
   return (
-    <div className="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 text-xs" style={{ borderTop: `1.5px solid ${INK}` }}>
+    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-3 px-3 py-2 text-xs" style={{ background: PAPER_CARD, border: `1.5px solid ${INK}` }}>
       {rows.map(([label, combo, yen]) =>
         yen ? (
           <span key={label} style={{ color: INK }}>
