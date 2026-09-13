@@ -81,13 +81,25 @@ export default function RaceCard({ race }) {
                     全成績{h.overallStats || "―"}・当場{h.trackStats || "―"}・当距離{h.distanceStats || "―"}
                     {h.bodyWeight ? `・馬体重${h.bodyWeight}kg${h.bodyWeightDiff ? `(${h.bodyWeightDiff})` : ""}` : ""}
                   </div>
+                  {h.recentForm?.length > 0 && (
+                    <div className="text-[0.625rem] mt-0.5 flex items-center gap-1" style={{ color: MUTED }}>
+                      <span>近{h.recentForm.length}走:</span>
+                      <span className="flex gap-1">
+                        {h.recentForm.map((finish, i) => (
+                          <span key={i} className="font-bold" style={{ color: finish === "1" ? RED : Number(finish) <= 3 ? INK : MUTED }}>
+                            {finish}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="text-right shrink-0 w-12">
                   <div className="text-xl font-black tabular-nums" style={{ color: isTop ? RED : INK, fontFamily: "'Shippori Mincho', serif" }}>
                     {h.total}
                   </div>
                   <div className="text-[0.5625rem]" style={{ color: MUTED }}>
-                    {h.hasData ? `基礎${h.base}` : "基礎データなし"}
+                    {h.hasData ? `基礎${h.base}${h.usedPastRaces ? "(近走)" : "(通算)"}` : "基礎データなし"}
                   </div>
                 </div>
               </div>

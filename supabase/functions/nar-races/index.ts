@@ -1,7 +1,10 @@
 // 地方競馬情報サイト(keiba.go.jp)のデータダウンロード機能からレース情報・オッズを取得し、
 // レース単位にマージして返すEdge Function。ブラウザから直接keiba.go.jpを叩くとCORSで
-// 弾かれるため、この関数がサーバー側で代わりに取得する。DBは使わず、毎回その場で取得・パースする
-// (当日ファイルは約40KB、月次ファイルも数MB程度でEdge Function内で十分に完結する)。
+// 弾かれるため、この関数がサーバー側で代わりに取得する。DBは使わず、毎回その場で取得・パースする。
+//
+// 地方競馬CSVには馬の一意なID(JV-Dataの血統登録番号のようなもの)が無いため、
+// 「馬名+生年月日」を複合キーにして、対象月+前月の月次ファイルから各馬の直近走を
+// 拾い集める(過去走の着順・タイム・上がり3Fを予想スコアの材料にするため)。
 
 import JSZip from "npm:jszip@3.10.1";
 import { parse } from "npm:csv-parse@5/sync";
@@ -55,6 +58,10 @@ function todayStr(): string {
   return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
 }
 
+function prevYearMonth(year: number, month: number) {
+  return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
+}
+
 async function downloadZip(url: string): Promise<Record<string, string>> {
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; chihou-keiba-shinbun/1.0)" },
@@ -92,6 +99,8 @@ type RaceFiles = {
   odds?: Record<string, string>[];
 };
 
+type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string };
+
 async function fetchDaily(): Promise<RaceFiles> {
   const [raceFiles, oddsFiles] = await Promise.all([
     downloadZip(`${BASE}/RaceDataDownload?type=daily`),
@@ -116,7 +125,36 @@ async function fetchMonthly(year: number, month: number): Promise<RaceFiles> {
   };
 }
 
-function mergeRaces({ racelist, horselist, odds = [], payback = [] }: RaceFiles, targetDate: string) {
+// 過去走の材料集め専用。出馬表(horselist)だけ取れれば足りるので、そこだけパースする。
+async function fetchMonthlyHorselist(year: number, month: number): Promise<Record<string, string>[]> {
+  const raceFiles = await downloadZip(`${BASE}/RaceDataDownload?type=monthly&k_year=${year}&k_month=${month}`);
+  return parseCsv(findEntry(raceFiles, "_horselist.csv"));
+}
+
+function horseKey(name: string, birth: string) {
+  return `${name}|${birth}`;
+}
+
+// horselist行の集まりから、馬名+生年月日をキーに「対象日より前に確定した過去走」を集める。
+function buildHistoryMap(rows: Record<string, string>[], beforeDate: string): Record<string, PastRun[]> {
+  const map: Record<string, PastRun[]> = {};
+  rows.forEach((h) => {
+    const date = h["競走年月日"];
+    const result = h["着順"];
+    if (!date || date >= beforeDate) return;
+    if (!result || Number(result) <= 0) return;
+    const key = horseKey(h["馬名"], h["生年月日"]);
+    (map[key] ||= []).push({ date, result, time: h["タイム"], last3f: h["上がり3F"], ninki: h["人気"] });
+  });
+  Object.values(map).forEach((runs) => runs.sort((a, b) => (a.date < b.date ? 1 : -1)));
+  return map;
+}
+
+function mergeRaces(
+  { racelist, horselist, odds = [], payback = [] }: RaceFiles,
+  targetDate: string,
+  historyMap: Record<string, PastRun[]>
+) {
   const races = racelist.filter((r) => r["競走年月日"] === targetDate);
   const keyOf = (venue: string, no: string) => `${venue}_${no}`;
 
@@ -151,6 +189,7 @@ function mergeRaces({ racelist, horselist, odds = [], payback = [] }: RaceFiles,
         .sort((a, b) => Number(a["馬番"]) - Number(b["馬番"]))
         .map((h) => {
           const liveOdds = oddsByKey[key]?.[h["馬番"]];
+          const pastRaces = (historyMap[horseKey(h["馬名"], h["生年月日"])] || []).slice(0, 5);
           return {
             waku: Number(h["枠番"]),
             umaban: Number(h["馬番"]),
@@ -180,6 +219,7 @@ function mergeRaces({ racelist, horselist, odds = [], payback = [] }: RaceFiles,
             time: h["タイム"] || null,
             margin: h["着差"] || null,
             last3f: h["上がり3F"] || null,
+            pastRaces,
           };
         });
 
@@ -210,7 +250,17 @@ async function getRacesForDate(dateStr: string) {
   const isToday = dateStr === todayStr();
   const year = Number(dateStr.slice(0, 4));
   const month = Number(dateStr.slice(4, 6));
+  const prev = prevYearMonth(year, month);
 
-  const files = isToday ? await fetchDaily() : await fetchMonthly(year, month);
-  return mergeRaces(files, dateStr);
+  // 過去走は「対象月と同じ月次ファイル(当日の場合は別途取得が要る)」+「前月分」から集める。
+  const [files, prevMonthHorselist, currentMonthHorselist] = await Promise.all([
+    isToday ? fetchDaily() : fetchMonthly(year, month),
+    fetchMonthlyHorselist(prev.year, prev.month),
+    isToday ? fetchMonthlyHorselist(year, month) : Promise.resolve<Record<string, string>[] | null>(null),
+  ]);
+
+  const historyRows = currentMonthHorselist ? [...prevMonthHorselist, ...currentMonthHorselist] : [...prevMonthHorselist, ...files.horselist];
+  const historyMap = buildHistoryMap(historyRows, dateStr);
+
+  return mergeRaces(files, dateStr, historyMap);
 }
