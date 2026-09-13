@@ -1,0 +1,10 @@
+# React Router(BrowserRouter)のSPAルーティングに対応するため、
+# /chiho/ 配下で存在しないパスへのリクエストは全てindex.htmlにフォールバックする。
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /chiho/
+  RewriteRule ^index\.html$ - [L]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /chiho/index.html [L]
+</IfModule>

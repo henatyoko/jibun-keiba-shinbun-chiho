@@ -19,3 +19,24 @@ body {
   background: var(--paper);
   font-family: var(--font-body);
 }
+
+@keyframes horse-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.horse-run-track {
+  display: flex;
+  justify-content: center;
+}
+
+.horse-run-track span {
+  display: inline-block;
+  font-size: 28px;
+  animation: horse-bob 0.35s ease-in-out infinite;
+}

@@ -26,7 +26,7 @@ export default function Masthead({ subtitle }) {
             </div>
           </div>
           <span className="text-[0.625rem]" style={{ color: INK, opacity: 0.7, fontFamily: "'Shippori Mincho', serif" }}>
-            号外
+            地方版
           </span>
         </div>
       </div>
