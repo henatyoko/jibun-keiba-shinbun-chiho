@@ -1,26 +1,16 @@
-import { useState } from "react";
-import { getMark, cycleMark } from "../lib/marks";
+import { useMemo } from "react";
 import { formatPostTime } from "../lib/date";
-import { PAPER_CARD, INK, RED, MUTED, LINE } from "../lib/colors";
+import { PAPER_CARD, INK, RED, MUTED, LINE, MARKS } from "../lib/colors";
+import { scoreRace, computeMarks } from "../lib/scoring";
 import WakuBadge from "./WakuBadge";
 
-function MarkButton({ raceId, umaban }) {
-  const [mark, setMark] = useState(() => getMark(raceId, umaban));
-  return (
-    <button
-      onClick={() => setMark(cycleMark(raceId, umaban))}
-      title="クリックで印を切り替え"
-      className="w-7 h-6 text-sm font-black shrink-0"
-      style={{ color: mark ? RED : MUTED, background: PAPER_CARD, border: `1px solid ${mark ? RED : MUTED}`, fontFamily: "'Shippori Mincho', serif" }}
-    >
-      {mark || "―"}
-    </button>
-  );
-}
-
 export default function RaceCard({ race }) {
+  const scored = useMemo(() => (race ? scoreRace(race) : []), [race]);
+  const { marksByUmaban, noDifferentiation } = useMemo(() => computeMarks(scored), [scored]);
+
   if (!race) return null;
   const surfaceLabel = race.surface && race.distance ? `${race.surface}${race.distance}m${race.turn ? `(${race.turn})` : ""}` : "";
+  const scoreByUmaban = Object.fromEntries(scored.map((h) => [h.umaban, h]));
 
   return (
     <div style={{ border: `1.5px solid ${INK}`, background: PAPER_CARD }}>
@@ -45,6 +35,22 @@ export default function RaceCard({ race }) {
         </div>
       </div>
 
+      {!noDifferentiation && (
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2" style={{ background: "#F3E4C8", borderBottom: `1.5px solid ${INK}` }}>
+          {MARKS.flatMap((m) => scored.filter((h) => marksByUmaban[h.umaban] === m)).map((h) => (
+            <span key={h.umaban} className="font-black" style={{ fontSize: "1rem", fontFamily: "'Shippori Mincho', serif", color: marksByUmaban[h.umaban] === MARKS[0] ? RED : INK }}>
+              {marksByUmaban[h.umaban]}
+              {h.umaban} {h.name}
+            </span>
+          ))}
+        </div>
+      )}
+      {noDifferentiation && (
+        <p className="px-3 py-1.5 text-[0.625rem]" style={{ color: MUTED, borderBottom: `1px solid ${LINE}` }}>
+          判断材料(通算成績)が乏しいため印は付けていません
+        </p>
+      )}
+
       <div className="overflow-x-auto">
         <table className="w-full text-xs whitespace-nowrap" style={{ borderCollapse: "collapse" }}>
           <thead>
@@ -65,10 +71,13 @@ export default function RaceCard({ race }) {
           <tbody>
             {race.horses.map((h, i) => {
               const isWin = h.result === "1" || h.result === 1;
+              const mark = marksByUmaban[h.umaban];
+              const applied = scoreByUmaban[h.umaban]?.applied ?? [];
+              const rationale = applied.length ? applied.map((a) => `${a.label}:${a.score > 0 ? "+" : ""}${a.score}`).join(" / ") : "補正材料なし";
               return (
                 <tr key={h.umaban} style={{ background: isWin ? "#F3E4C8" : PAPER_CARD, borderBottom: i < race.horses.length - 1 ? `1px solid ${LINE}` : "none" }}>
-                  <td className="px-2 py-1.5 text-center">
-                    <MarkButton raceId={race.id} umaban={h.umaban} />
+                  <td className="px-2 py-1.5 text-center font-black" style={{ color: mark === MARKS[0] ? RED : INK, fontFamily: "'Shippori Mincho', serif" }} title={rationale}>
+                    {mark || "―"}
                   </td>
                   <td className="px-2 py-1.5 text-center">
                     <WakuBadge num={h.waku} waku={h.waku} />
