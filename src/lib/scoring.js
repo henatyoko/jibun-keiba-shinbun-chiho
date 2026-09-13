@@ -38,12 +38,29 @@ export function baseScoreFromOverall(overallStr) {
   return { score: Math.round(70 + raw * shrink), rec };
 }
 
+// 同じ1着でも重賞優勝と下級条件戦の優勝では価値が全然違うため、着順そのものではなく
+// その1走で稼いだ賞金額を点数化する(jibun-keiba-shinbunと同じ考え方)。地方競馬は
+// 1着賞金が10万円台〜(交流重賞は数千万円)とJRAよりずっと下のレンジなので、
+// 30万円のレース勝ち≒+3点、100万円≒+7点、1000万円級の重賞≒+14点になるよう調整している
+// (jibun側のように大量の実戦データで検証した値ではなく、レース格の相場観からの初期値)。
+function moneyPoint(yen) {
+  if (!Number.isFinite(yen) || yen <= 0) return null;
+  return Math.max(-2, Math.min(16, (Math.log10(yen) - 5) * 7));
+}
+
+// 賞金額が取れない(該当レースが見つからない等)時のフォールバック。着順だけの簡易点。
 function financePointFromFinish(finish) {
   if (finish === 1) return 10;
   if (finish === 2) return 6;
   if (finish === 3) return 3;
   if (finish === 4) return 1;
   return Math.max(-2, 1 - (finish - 4) * 0.5);
+}
+
+function pointForPastRun(r) {
+  const money = moneyPoint(r.money);
+  if (money != null) return money;
+  return financePointFromFinish(Number(r.result));
 }
 
 function dateStrToMs(dateStr) {
@@ -58,10 +75,10 @@ function dateStrToMs(dateStr) {
 // 間隔が開くほど自然に過去走の重みが下がるため、休養明けの文脈も反映できる。
 const RECENCY_HALF_LIFE_DAYS = 60;
 
-// 直近走(最大5走・新しい順)から基礎点を算出する。(1)着順を点数化、
-// (2)レース日が近いほど重みを付ける(半減期60日)、(3)上がり3Fが直近ほど
-// 速くなっていれば上向きとして加点、の3軸。pastRacesが無ければnullを返す
-// (呼び出し側はbaseScoreFromOverallにフォールバックする)。
+// 直近走(最大5走・新しい順)から基礎点を算出する。(1)獲得賞金からその1走の価値を
+// 点数化(レースの格・着順の良さを両方反映)、(2)レース日が近いほど重みを付ける
+// (半減期60日)、(3)上がり3Fが直近ほど速くなっていれば上向きとして加点、の3軸。
+// pastRacesが無ければnullを返す(呼び出し側はbaseScoreFromOverallにフォールバックする)。
 export function baseScoreFromPastRaces(pastRaces, currentDateStr) {
   if (!pastRaces || pastRaces.length === 0) return null;
   const currentMs = dateStrToMs(currentDateStr);
@@ -72,7 +89,7 @@ export function baseScoreFromPastRaces(pastRaces, currentDateStr) {
   pastRaces.slice(0, 5).forEach((r) => {
     const finish = Number(r.result);
     if (!Number.isFinite(finish) || finish <= 0) return;
-    const point = financePointFromFinish(finish);
+    const point = pointForPastRun(r);
     const pastMs = dateStrToMs(r.date);
     const daysAgo = pastMs != null && currentMs != null ? Math.max(0, (currentMs - pastMs) / 86400000) : RECENCY_HALF_LIFE_DAYS * 1.5;
     const weight = Math.pow(0.5, daysAgo / RECENCY_HALF_LIFE_DAYS);

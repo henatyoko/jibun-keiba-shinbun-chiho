@@ -92,6 +92,22 @@ function parseCsv(text: string | null): Record<string, string>[] {
   });
 }
 
+// 過去走の材料集め用の軽量パース。月次ファイルは1万行超あり、全カラムを保持すると
+// Edge Functionのメモリ上限(WORKER_RESOURCE_LIMIT)に達するため、使う列だけに絞る。
+function parseCsvColumns(text: string | null, wanted: string[]): Record<string, string>[] {
+  if (!text) return [];
+  const wantedSet = new Set(wanted);
+  return parse(text, {
+    columns: (header: string[]) => header.map((h) => (wantedSet.has(h) ? h : undefined)),
+    bom: true,
+    skip_empty_lines: true,
+    relax_column_count: true,
+  });
+}
+
+const HISTORY_HORSE_COLUMNS = ["競馬場", "競走年月日", "レース番号", "馬名", "生年月日", "着順", "タイム", "上がり3F", "人気"];
+const HISTORY_RACE_COLUMNS = ["競馬場", "競走年月日", "レース番号", "1着賞金(円)", "2着賞金(円)", "3着賞金(円)", "4着賞金(円)", "5着賞金(円)"];
+
 type RaceFiles = {
   racelist: Record<string, string>[];
   horselist: Record<string, string>[];
@@ -99,7 +115,8 @@ type RaceFiles = {
   odds?: Record<string, string>[];
 };
 
-type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string };
+type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string; money: number };
+type MonthlyRaceHorse = { racelist: Record<string, string>[]; horselist: Record<string, string>[] };
 
 async function fetchDaily(): Promise<RaceFiles> {
   const [raceFiles, oddsFiles] = await Promise.all([
@@ -125,26 +142,50 @@ async function fetchMonthly(year: number, month: number): Promise<RaceFiles> {
   };
 }
 
-// 過去走の材料集め専用。出馬表(horselist)だけ取れれば足りるので、そこだけパースする。
-async function fetchMonthlyHorselist(year: number, month: number): Promise<Record<string, string>[]> {
+// 過去走の材料集め専用(対象月+前月)。出馬表(着順)だけ取れれば足りる。
+// 賞金額による重み付け(レース一覧も追加取得)も試したが、Edge Functionの
+// リソース上限(WORKER_RESOURCE_LIMIT)に達して本番が完全に落ちる一方、
+// バックテストでは着順ベースと的中率がほぼ変わらなかったため、出馬表のみに戻した。
+async function fetchMonthlyRaceAndHorse(year: number, month: number): Promise<MonthlyRaceHorse> {
   const raceFiles = await downloadZip(`${BASE}/RaceDataDownload?type=monthly&k_year=${year}&k_month=${month}`);
-  return parseCsv(findEntry(raceFiles, "_horselist.csv"));
+  return {
+    racelist: [],
+    horselist: parseCsvColumns(findEntry(raceFiles, "_horselist.csv"), HISTORY_HORSE_COLUMNS),
+  };
 }
 
 function horseKey(name: string, birth: string) {
   return `${name}|${birth}`;
 }
 
+function raceKeyOf(venue: string, date: string, no: string) {
+  return `${venue}_${date}_${no}`;
+}
+
+// レース一覧から「そのレースの着順ごとの賞金額」の索引を作る(1〜5着賞金(円))。
+function buildPrizeLookup(racelistRows: Record<string, string>[]): Record<string, number[]> {
+  const map: Record<string, number[]> = {};
+  racelistRows.forEach((r) => {
+    const key = raceKeyOf(r["競馬場"], r["競走年月日"], r["レース番号"]);
+    map[key] = [1, 2, 3, 4, 5].map((n) => Number(r[`${n}着賞金(円)`]) || 0);
+  });
+  return map;
+}
+
 // horselist行の集まりから、馬名+生年月日をキーに「対象日より前に確定した過去走」を集める。
-function buildHistoryMap(rows: Record<string, string>[], beforeDate: string): Record<string, PastRun[]> {
+// 賞金額(money)はprizeLookupから引く(無ければ0=着外相当として扱う)。
+function buildHistoryMap(rows: Record<string, string>[], prizeLookup: Record<string, number[]>, beforeDate: string): Record<string, PastRun[]> {
   const map: Record<string, PastRun[]> = {};
   rows.forEach((h) => {
     const date = h["競走年月日"];
     const result = h["着順"];
+    const finish = Number(result);
     if (!date || date >= beforeDate) return;
-    if (!result || Number(result) <= 0) return;
+    if (!Number.isFinite(finish) || finish <= 0) return;
     const key = horseKey(h["馬名"], h["生年月日"]);
-    (map[key] ||= []).push({ date, result, time: h["タイム"], last3f: h["上がり3F"], ninki: h["人気"] });
+    const prizes = prizeLookup[raceKeyOf(h["競馬場"], date, h["レース番号"])];
+    const money = prizes && finish <= 5 ? prizes[finish - 1] : 0;
+    (map[key] ||= []).push({ date, result, time: h["タイム"], last3f: h["上がり3F"], ninki: h["人気"], money });
   });
   Object.values(map).forEach((runs) => runs.sort((a, b) => (a.date < b.date ? 1 : -1)));
   return map;
@@ -253,14 +294,16 @@ async function getRacesForDate(dateStr: string) {
   const prev = prevYearMonth(year, month);
 
   // 過去走は「対象月と同じ月次ファイル(当日の場合は別途取得が要る)」+「前月分」から集める。
-  const [files, prevMonthHorselist, currentMonthHorselist] = await Promise.all([
-    isToday ? fetchDaily() : fetchMonthly(year, month),
-    fetchMonthlyHorselist(prev.year, prev.month),
-    isToday ? fetchMonthlyHorselist(year, month) : Promise.resolve<Record<string, string>[] | null>(null),
-  ]);
+  // Edge Functionのメモリ上限に収めるため、重い月次取得は並列にせず順番に行う
+  // (複数のZIP解凍・大きな配列を同時にメモリ上に持たないようにする)。
+  const files = isToday ? await fetchDaily() : await fetchMonthly(year, month);
+  const prevMonthData = await fetchMonthlyRaceAndHorse(prev.year, prev.month);
+  const currentMonthData = isToday ? await fetchMonthlyRaceAndHorse(year, month) : null;
 
-  const historyRows = currentMonthHorselist ? [...prevMonthHorselist, ...currentMonthHorselist] : [...prevMonthHorselist, ...files.horselist];
-  const historyMap = buildHistoryMap(historyRows, dateStr);
+  const historyHorseRows = currentMonthData ? [...prevMonthData.horselist, ...currentMonthData.horselist] : [...prevMonthData.horselist, ...files.horselist];
+  const historyRaceRows = currentMonthData ? [...prevMonthData.racelist, ...currentMonthData.racelist] : [...prevMonthData.racelist, ...files.racelist];
+  const prizeLookup = buildPrizeLookup(historyRaceRows);
+  const historyMap = buildHistoryMap(historyHorseRows, prizeLookup, dateStr);
 
   return mergeRaces(files, dateStr, historyMap);
 }
