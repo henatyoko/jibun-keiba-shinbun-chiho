@@ -1,0 +1,239 @@
+@import url("https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;800&family=Noto+Sans+JP:wght@400;500;700&display=swap");
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f2ede1;
+  color: #1a1a1a;
+  font-family: "Noto Sans JP", sans-serif;
+}
+
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 12px 16px 60px;
+}
+
+.masthead {
+  border-bottom: 4px double #1a1a1a;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.masthead h1 {
+  font-family: "Shippori Mincho", serif;
+  font-weight: 800;
+  font-size: 28px;
+  margin: 0;
+  letter-spacing: 0.05em;
+}
+
+.date-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Shippori Mincho", serif;
+}
+
+.date-nav button {
+  background: none;
+  border: 1px solid #999;
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #1a1a1a;
+}
+
+.date-nav button:hover {
+  background: #e6dfce;
+}
+
+.current-date {
+  font-size: 18px;
+  font-weight: 700;
+  min-width: 90px;
+  text-align: center;
+}
+
+.status {
+  padding: 20px 0;
+  text-align: center;
+  color: #666;
+}
+
+.status.error {
+  color: #b02020;
+}
+
+.venue-tabs,
+.race-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.venue-tabs button,
+.race-tabs button {
+  border: 1px solid #1a1a1a;
+  background: #fff;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 3px;
+}
+
+.race-tabs button {
+  border-color: #999;
+  padding: 4px 10px;
+}
+
+.venue-tabs button.active,
+.race-tabs button.active {
+  background: #1a1a1a;
+  color: #fff;
+}
+
+.race-card {
+  background: #fffdf8;
+  border: 1px solid #1a1a1a;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.race-card-header {
+  background: #1a1a1a;
+  color: #fff;
+  padding: 10px 14px;
+}
+
+.race-card-header-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: "Shippori Mincho", serif;
+}
+
+.race-no {
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.race-name {
+  font-size: 16px;
+  flex: 1;
+}
+
+.post-time {
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.race-card-header-sub {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  margin-top: 4px;
+  opacity: 0.85;
+  flex-wrap: wrap;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.horse-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.horse-table th,
+.horse-table td {
+  border-bottom: 1px solid #ddd;
+  padding: 6px 8px;
+  text-align: center;
+}
+
+.horse-table thead th {
+  background: #e6dfce;
+  position: sticky;
+  top: 0;
+  font-weight: 700;
+}
+
+.horse-table .col-name {
+  text-align: left;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.horse-table .horse-name {
+  font-weight: 700;
+}
+
+.horse-table tbody tr:hover {
+  background: #f5f0e2;
+}
+
+.horse-table tr.row-win {
+  background: #fff2cc;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.waku {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mark-btn {
+  width: 28px;
+  height: 24px;
+  border: 1px solid #ccc;
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #b02020;
+  font-weight: 700;
+}
+
+.mark-btn:hover {
+  border-color: #b02020;
+}
+
+.payback {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding: 10px 14px;
+  background: #efe8d8;
+  font-size: 12.5px;
+  border-top: 1px solid #1a1a1a;
+}
+
+.payback-item em {
+  font-style: normal;
+  color: #b02020;
+  font-weight: 700;
+}
