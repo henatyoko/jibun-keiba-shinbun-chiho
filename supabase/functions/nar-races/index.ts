@@ -1,10 +1,13 @@
 // 地方競馬情報サイト(keiba.go.jp)のデータダウンロード機能からレース情報・オッズを取得し、
 // レース単位にマージして返すEdge Function。ブラウザから直接keiba.go.jpを叩くとCORSで
-// 弾かれるため、この関数がサーバー側で代わりに取得する。DBは使わず、毎回その場で取得・パースする。
+// 弾かれるため、この関数がサーバー側で代わりに取得する。
 //
-// 地方競馬CSVには馬の一意なID(JV-Dataの血統登録番号のようなもの)が無いため、
-// 「馬名+生年月日」を複合キーにして、対象月+前月の月次ファイルから各馬の直近走を
-// 拾い集める(過去走の着順・タイム・上がり3Fを予想スコアの材料にするため)。
+// 過去走(予想スコアの材料)は、CSVをその場で解析するのではなく自前のSupabaseテーブル
+// (nar_race_history)から引く。以前はCSVの月次ファイルを都度2ヶ月分ダウンロード・解析
+// していたが、Edge Functionのメモリ上限(WORKER_RESOURCE_LIMIT)に達して本番が落ちる
+// 問題があり、かつ2ヶ月しか遡れなかった。DBに徐々に蓄積していく方式なら軽量かつ
+// 遡れる範囲もほぼ無制限になる。このEdge Function自身が、処理した日の確定済み結果を
+// 都度DBに書き足していく(初回バックフィルはローカルスクリプトで別途実施済み)。
 
 import JSZip from "npm:jszip@3.10.1";
 import { parse } from "npm:csv-parse@5/sync";
@@ -17,12 +20,13 @@ const CORS_HEADERS = {
 
 const BASE = "https://www.keiba.go.jp/KeibaWeb/DataDownload";
 
-// jibun-keiba-shinbun(中央競馬版)と同じSupabaseプロジェクトを使っている。JV-Data系
-// テーブル(kyosoba_master2, umagoto_race_joho)は誰でもSELECTできる公開ポリシーが
-// 既に設定済みなので、anonキーでそのまま読める。Edge Function実行環境には
-// SUPABASE_URL/SUPABASE_ANON_KEYが自動で渡される。
+// jibun-keiba-shinbun(中央競馬版)と同じSupabaseプロジェクトを使っている。
+// JV-Data系テーブル(kyosoba_master2, umagoto_race_joho)・自前のnar_race_historyは
+// 誰でもSELECTできる公開ポリシー設定済みなのでanonキーで読める。書き込み(結果の
+// 蓄積)だけはservice roleキーを使う(どちらもEdge Function実行環境に自動で渡される)。
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -65,10 +69,6 @@ function todayStr(): string {
   return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
 }
 
-function prevYearMonth(year: number, month: number) {
-  return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
-}
-
 async function downloadZip(url: string): Promise<Record<string, string>> {
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (compatible; chihou-keiba-shinbun/1.0)" },
@@ -99,22 +99,6 @@ function parseCsv(text: string | null): Record<string, string>[] {
   });
 }
 
-// 過去走の材料集め用の軽量パース。月次ファイルは1万行超あり、全カラムを保持すると
-// Edge Functionのメモリ上限(WORKER_RESOURCE_LIMIT)に達するため、使う列だけに絞る。
-function parseCsvColumns(text: string | null, wanted: string[]): Record<string, string>[] {
-  if (!text) return [];
-  const wantedSet = new Set(wanted);
-  return parse(text, {
-    columns: (header: string[]) => header.map((h) => (wantedSet.has(h) ? h : undefined)),
-    bom: true,
-    skip_empty_lines: true,
-    relax_column_count: true,
-  });
-}
-
-const HISTORY_HORSE_COLUMNS = ["競馬場", "競走年月日", "レース番号", "馬名", "生年月日", "着順", "タイム", "上がり3F", "人気"];
-const HISTORY_RACE_COLUMNS = ["競馬場", "競走年月日", "レース番号", "1着賞金(円)", "2着賞金(円)", "3着賞金(円)", "4着賞金(円)", "5着賞金(円)"];
-
 type RaceFiles = {
   racelist: Record<string, string>[];
   horselist: Record<string, string>[];
@@ -123,7 +107,6 @@ type RaceFiles = {
 };
 
 type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string; money: number; league: "NAR" | "JRA" };
-type MonthlyRaceHorse = { racelist: Record<string, string>[]; horselist: Record<string, string>[] };
 
 async function supabaseSelect(table: string, params: string): Promise<Record<string, string>[]> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
@@ -132,6 +115,32 @@ async function supabaseSelect(table: string, params: string): Promise<Record<str
   });
   if (!res.ok) return [];
   return res.json();
+}
+
+async function supabaseUpsert(table: string, rows: Record<string, unknown>[]): Promise<void> {
+  if (!rows.length || !SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify(rows),
+    });
+  } catch (err) {
+    console.error(`upsert ${table} failed:`, err);
+  }
+}
+
+function horseKey(name: string, birth: string) {
+  return `${name}|${birth}`;
+}
+
+function raceKeyOf(venue: string, date: string, no: string) {
+  return `${venue}_${date}_${no}`;
 }
 
 // 地方競馬CSVには「馬名+生年月日」しか無く通算成績も地方の出走分しか集計されていないため、
@@ -196,6 +205,47 @@ async function fetchJraHistoryMap(entrants: { name: string; birth: string }[]): 
   }
 }
 
+// 自前で蓄積している地方競馬の過去走DB(nar_race_history)から、対象日より前の
+// 直近走を引く。CSVを都度解析する方式と違い月をまたいで何年でも遡れる。
+async function fetchNarHistoryMap(entrants: { name: string; birth: string }[], beforeDate: string): Promise<Record<string, PastRun[]>> {
+  try {
+    const uniqueNames = [...new Set(entrants.map((e) => e.name).filter(Boolean))];
+    if (uniqueNames.length === 0) return {};
+
+    const birthByName: Record<string, Set<string>> = {};
+    entrants.forEach((e) => (birthByName[e.name] ||= new Set()).add(e.birth));
+
+    const rows: Record<string, string>[] = [];
+    for (let i = 0; i < uniqueNames.length; i += 100) {
+      const batch = uniqueNames.slice(i, i + 100);
+      const inList = batch.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(",");
+      const params = `bamei=in.(${encodeURIComponent(inList)})&race_date=lt.${beforeDate}&select=bamei,seinengappi,race_date,chakujun,time,agari_3f,ninki,shokin&order=race_date.desc&limit=1000`;
+      const batchRows = await supabaseSelect("nar_race_history", params);
+      rows.push(...batchRows);
+    }
+
+    const map: Record<string, PastRun[]> = {};
+    rows.forEach((r) => {
+      if (!birthByName[r["bamei"]]?.has(r["seinengappi"])) return;
+      const key = horseKey(r["bamei"], r["seinengappi"]);
+      (map[key] ||= []).push({
+        date: r["race_date"],
+        result: String(r["chakujun"]),
+        time: r["time"] || "",
+        last3f: r["agari_3f"] || "",
+        ninki: r["ninki"] || "",
+        money: Number(r["shokin"]) || 0,
+        league: "NAR",
+      });
+    });
+    Object.values(map).forEach((arr) => arr.sort((a, b) => (a.date < b.date ? 1 : -1)));
+    return map;
+  } catch (err) {
+    console.error("NAR history DB lookup failed:", err);
+    return {};
+  }
+}
+
 async function fetchDaily(): Promise<RaceFiles> {
   const [raceFiles, oddsFiles] = await Promise.all([
     downloadZip(`${BASE}/RaceDataDownload?type=daily`),
@@ -220,26 +270,6 @@ async function fetchMonthly(year: number, month: number): Promise<RaceFiles> {
   };
 }
 
-// 過去走の材料集め専用(対象月+前月)。出馬表(着順)だけ取れれば足りる。
-// 賞金額による重み付け(レース一覧も追加取得)も試したが、Edge Functionの
-// リソース上限(WORKER_RESOURCE_LIMIT)に達して本番が完全に落ちる一方、
-// バックテストでは着順ベースと的中率がほぼ変わらなかったため、出馬表のみに戻した。
-async function fetchMonthlyRaceAndHorse(year: number, month: number): Promise<MonthlyRaceHorse> {
-  const raceFiles = await downloadZip(`${BASE}/RaceDataDownload?type=monthly&k_year=${year}&k_month=${month}`);
-  return {
-    racelist: [],
-    horselist: parseCsvColumns(findEntry(raceFiles, "_horselist.csv"), HISTORY_HORSE_COLUMNS),
-  };
-}
-
-function horseKey(name: string, birth: string) {
-  return `${name}|${birth}`;
-}
-
-function raceKeyOf(venue: string, date: string, no: string) {
-  return `${venue}_${date}_${no}`;
-}
-
 // レース一覧から「そのレースの着順ごとの賞金額」の索引を作る(1〜5着賞金(円))。
 function buildPrizeLookup(racelistRows: Record<string, string>[]): Record<string, number[]> {
   const map: Record<string, number[]> = {};
@@ -250,23 +280,31 @@ function buildPrizeLookup(racelistRows: Record<string, string>[]): Record<string
   return map;
 }
 
-// horselist行の集まりから、馬名+生年月日をキーに「対象日より前に確定した過去走」を集める。
-// 賞金額(money)はprizeLookupから引く(無ければ0=着外相当として扱う)。
-function buildHistoryMap(rows: Record<string, string>[], prizeLookup: Record<string, number[]>, beforeDate: string): Record<string, PastRun[]> {
-  const map: Record<string, PastRun[]> = {};
-  rows.forEach((h) => {
-    const date = h["競走年月日"];
-    const result = h["着順"];
-    const finish = Number(result);
-    if (!date || date >= beforeDate) return;
-    if (!Number.isFinite(finish) || finish <= 0) return;
-    const key = horseKey(h["馬名"], h["生年月日"]);
-    const prizes = prizeLookup[raceKeyOf(h["競馬場"], date, h["レース番号"])];
-    const money = prizes && finish <= 5 ? prizes[finish - 1] : 0;
-    (map[key] ||= []).push({ date, result, time: h["タイム"], last3f: h["上がり3F"], ninki: h["人気"], money, league: "NAR" });
-  });
-  Object.values(map).forEach((runs) => runs.sort((a, b) => (a.date < b.date ? 1 : -1)));
-  return map;
+// 対象日に確定した結果をnar_race_historyに書き足す。次回以降この日を過去走として
+// 引けるようにするため(=DBが使うたびに育っていく)。
+async function saveTodayResultsToHistory(horselistRows: Record<string, string>[], prizeLookup: Record<string, number[]>, targetDate: string) {
+  const rows = horselistRows
+    .map((h) => {
+      const finish = Number(h["着順"]);
+      if (!Number.isFinite(finish) || finish <= 0) return null;
+      const prizes = prizeLookup[raceKeyOf(h["競馬場"], targetDate, h["レース番号"])];
+      const shokin = prizes && finish <= 5 ? prizes[finish - 1] : 0;
+      return {
+        bamei: h["馬名"],
+        seinengappi: h["生年月日"],
+        keibajo: h["競馬場"],
+        race_date: targetDate,
+        race_number: h["レース番号"],
+        chakujun: finish,
+        time: h["タイム"] || null,
+        agari_3f: h["上がり3F"] || null,
+        ninki: h["人気"] || null,
+        shokin,
+      };
+    })
+    .filter((r): r is NonNullable<typeof r> => r !== null);
+
+  await supabaseUpsert("nar_race_history", rows);
 }
 
 function mergeRaces(
@@ -373,24 +411,27 @@ async function getRacesForDate(dateStr: string) {
   const isToday = dateStr === todayStr();
   const year = Number(dateStr.slice(0, 4));
   const month = Number(dateStr.slice(4, 6));
-  const prev = prevYearMonth(year, month);
 
-  // 過去走は「対象月と同じ月次ファイル(当日の場合は別途取得が要る)」+「前月分」から集める。
-  // Edge Functionのメモリ上限に収めるため、重い月次取得は並列にせず順番に行う
-  // (複数のZIP解凍・大きな配列を同時にメモリ上に持たないようにする)。
   const files = isToday ? await fetchDaily() : await fetchMonthly(year, month);
-  const prevMonthData = await fetchMonthlyRaceAndHorse(prev.year, prev.month);
-  const currentMonthData = isToday ? await fetchMonthlyRaceAndHorse(year, month) : null;
 
-  const historyHorseRows = currentMonthData ? [...prevMonthData.horselist, ...currentMonthData.horselist] : [...prevMonthData.horselist, ...files.horselist];
-  const historyRaceRows = currentMonthData ? [...prevMonthData.racelist, ...currentMonthData.racelist] : [...prevMonthData.racelist, ...files.racelist];
-  const prizeLookup = buildPrizeLookup(historyRaceRows);
-  const historyMap = buildHistoryMap(historyHorseRows, prizeLookup, dateStr);
+  const targetHorselistRows = files.horselist.filter((h) => h["競走年月日"] === dateStr);
+  const entrants = targetHorselistRows.map((h) => ({ name: h["馬名"], birth: h["生年月日"] }));
 
-  const entrants = files.horselist
-    .filter((h) => h["競走年月日"] === dateStr)
-    .map((h) => ({ name: h["馬名"], birth: h["生年月日"] }));
-  const jraHistoryMap = await fetchJraHistoryMap(entrants);
+  const [historyMap, jraHistoryMap] = await Promise.all([
+    fetchNarHistoryMap(entrants, dateStr),
+    fetchJraHistoryMap(entrants),
+  ]);
 
-  return mergeRaces(files, dateStr, historyMap, jraHistoryMap);
+  const races = mergeRaces(files, dateStr, historyMap, jraHistoryMap);
+
+  // 確定した結果をDBに書き足す(次回以降この日を過去走として引けるようにする)。
+  // Edge Functionはレスポンスを返すとバックグラウンド処理が打ち切られることがあるため、
+  // 完了を待ってから返す(失敗しても本体のレース情報取得は失敗させない)。
+  const targetRacelistRows = files.racelist.filter((r) => r["競走年月日"] === dateStr);
+  const targetPrizeLookup = buildPrizeLookup(targetRacelistRows);
+  await saveTodayResultsToHistory(targetHorselistRows, targetPrizeLookup, dateStr).catch((err) =>
+    console.error("saveTodayResultsToHistory failed:", err)
+  );
+
+  return races;
 }
