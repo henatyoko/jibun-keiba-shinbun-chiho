@@ -119,11 +119,14 @@ export function baseScoreFromPastRaces(pastRaces, currentDateStr) {
 // 当場/当距離の成績が、その馬の通算成績(基準)より良い/悪いかで補正する。
 function fitAdjustment(label, statStr, overallRec, weight) {
   const rec = parseRecord(statStr);
-  if (!rec || rec.starts < 2) return null;
+  // 2〜3走だけで好走率100%/0%のような極端な値になりやすく、直近の悪い着順を
+  // 覆すほどの大きい補正が付いてしまっていた(2走2連対で+9点等)。最低3走に上げ、
+  // 縮小率の分母もbaseScoreFromOverallと同じ8に広げて、少ない標本の影響を弱める。
+  if (!rec || rec.starts < 3) return null;
   const rate = top3Rate(rec);
   const baseline = (overallRec ? top3Rate(overallRec) : null) ?? 0.3;
-  const shrink = Math.min(rec.starts / 5, 1);
-  const score = Math.round((rate - baseline) * 15 * shrink * weight);
+  const shrink = Math.min(rec.starts / 8, 1);
+  const score = Math.max(-4, Math.min(4, Math.round((rate - baseline) * 15 * shrink * weight)));
   if (score === 0) return null;
   return { label: `${label}${rec.win}-${rec.place}-${rec.show}-${rec.other}`, score };
 }
