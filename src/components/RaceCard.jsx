@@ -69,8 +69,13 @@ export default function RaceCard({ race }) {
                       {h.result}着
                     </div>
                   )}
-                  <div className="font-bold text-[0.9375rem]" style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}>
+                  <div className="font-bold text-[0.9375rem] flex items-center gap-1.5" style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}>
                     {h.name}
+                    {h.hasJraHistory && (
+                      <span className="text-[0.5625rem] font-semibold px-1 py-0.5" style={{ color: MUTED, border: `1px solid ${MUTED}`, fontFamily: "sans-serif" }}>
+                        元中央
+                      </span>
+                    )}
                   </div>
                   <div className="text-[0.625rem]" style={{ color: MUTED }}>
                     {h.sex}
@@ -85,9 +90,10 @@ export default function RaceCard({ race }) {
                     <div className="text-[0.625rem] mt-0.5 flex items-center gap-1" style={{ color: MUTED }}>
                       <span>近{h.recentForm.length}走:</span>
                       <span className="flex gap-1">
-                        {h.recentForm.map((finish, i) => (
-                          <span key={i} className="font-bold" style={{ color: finish === "1" ? RED : Number(finish) <= 3 ? INK : MUTED }}>
-                            {finish}
+                        {h.recentForm.map((r, i) => (
+                          <span key={i} className="font-bold" style={{ color: r.result === "1" ? RED : Number(r.result) <= 3 ? INK : MUTED }}>
+                            {r.result}
+                            {r.league === "JRA" && <sup>中</sup>}
                           </span>
                         ))}
                       </span>

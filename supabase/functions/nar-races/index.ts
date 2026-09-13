@@ -17,6 +17,13 @@ const CORS_HEADERS = {
 
 const BASE = "https://www.keiba.go.jp/KeibaWeb/DataDownload";
 
+// jibun-keiba-shinbun(中央競馬版)と同じSupabaseプロジェクトを使っている。JV-Data系
+// テーブル(kyosoba_master2, umagoto_race_joho)は誰でもSELECTできる公開ポリシーが
+// 既に設定済みなので、anonキーでそのまま読める。Edge Function実行環境には
+// SUPABASE_URL/SUPABASE_ANON_KEYが自動で渡される。
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: CORS_HEADERS });
@@ -115,8 +122,79 @@ type RaceFiles = {
   odds?: Record<string, string>[];
 };
 
-type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string; money: number };
+type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string; money: number; league: "NAR" | "JRA" };
 type MonthlyRaceHorse = { racelist: Record<string, string>[]; horselist: Record<string, string>[] };
+
+async function supabaseSelect(table: string, params: string): Promise<Record<string, string>[]> {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) return [];
+  return res.json();
+}
+
+// 地方競馬CSVには「馬名+生年月日」しか無く通算成績も地方の出走分しか集計されていないため、
+// JRAから転入した馬は実際の実力に関わらず「経験の浅い馬」にしか見えない。
+// jibun-keiba-shinbun側のJV-Data(kyosoba_master2, umagoto_race_joho)は同じSupabase
+// プロジェクトにあるので、馬名+生年月日が完全一致する馬を探し、見つかればJRAでの
+// 過去走(着順・賞金・上がり3F)も予想スコアの材料に加える。見つからなくても
+// (=地方生え抜きの馬、またはJV-Data同期が止まっている等)実害はなく、そのまま
+// 地方の過去走だけで評価する。
+async function fetchJraHistoryMap(entrants: { name: string; birth: string }[]): Promise<Record<string, PastRun[]>> {
+  try {
+    const uniqueNames = [...new Set(entrants.map((e) => e.name).filter(Boolean))];
+    if (uniqueNames.length === 0) return {};
+
+    const candidates: Record<string, string>[] = [];
+    for (let i = 0; i < uniqueNames.length; i += 100) {
+      const batch = uniqueNames.slice(i, i + 100);
+      const inList = batch.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(",");
+      const rows = await supabaseSelect("kyosoba_master2", `bamei=in.(${encodeURIComponent(inList)})&select=bamei,seinengappi,ketto_toroku_bango`);
+      candidates.push(...rows);
+    }
+    if (candidates.length === 0) return {};
+
+    // 生年月日も完全一致するものだけ採用する(同姓同名の別馬を除外するため)。
+    const birthByName: Record<string, Set<string>> = {};
+    entrants.forEach((e) => (birthByName[e.name] ||= new Set()).add(e.birth));
+    const kettoByKey: Record<string, string> = {};
+    candidates.forEach((c) => {
+      if (birthByName[c.bamei]?.has(c.seinengappi)) {
+        kettoByKey[horseKey(c.bamei, c.seinengappi)] = c.ketto_toroku_bango;
+      }
+    });
+
+    const kettoNumbers = [...new Set(Object.values(kettoByKey))];
+    if (kettoNumbers.length === 0) return {};
+
+    const races = await supabaseSelect(
+      "umagoto_race_joho",
+      `ketto_toroku_bango=in.(${kettoNumbers.join(",")})&kakutei_chakujun=neq.00&select=race_code,ketto_toroku_bango,kakutei_chakujun,kakutoku_honshokin,kohan_3f&order=race_code.desc`
+    );
+
+    const byKetto: Record<string, PastRun[]> = {};
+    races.forEach((r) => {
+      const finish = Number(r["kakutei_chakujun"]);
+      if (!Number.isFinite(finish) || finish <= 0) return;
+      const date = String(r["race_code"]).slice(0, 8);
+      const money = (Number(r["kakutoku_honshokin"]) || 0) * 100; // JV-Dataの賞金は100円単位
+      const last3fRaw = Number(r["kohan_3f"]);
+      // JV-Dataは上がり3F未計測を"999"(=99.9秒)の番兵値で返すため除外する
+      const last3f = Number.isFinite(last3fRaw) && last3fRaw > 0 && last3fRaw < 900 ? String(last3fRaw / 10) : "";
+      (byKetto[r["ketto_toroku_bango"]] ||= []).push({ date, result: String(finish), time: "", last3f, ninki: "", money, league: "JRA" });
+    });
+
+    const result: Record<string, PastRun[]> = {};
+    Object.entries(kettoByKey).forEach(([key, ketto]) => {
+      if (byKetto[ketto]?.length) result[key] = byKetto[ketto].slice(0, 5);
+    });
+    return result;
+  } catch (err) {
+    console.error("JRA history lookup failed:", err);
+    return {};
+  }
+}
 
 async function fetchDaily(): Promise<RaceFiles> {
   const [raceFiles, oddsFiles] = await Promise.all([
@@ -185,7 +263,7 @@ function buildHistoryMap(rows: Record<string, string>[], prizeLookup: Record<str
     const key = horseKey(h["馬名"], h["生年月日"]);
     const prizes = prizeLookup[raceKeyOf(h["競馬場"], date, h["レース番号"])];
     const money = prizes && finish <= 5 ? prizes[finish - 1] : 0;
-    (map[key] ||= []).push({ date, result, time: h["タイム"], last3f: h["上がり3F"], ninki: h["人気"], money });
+    (map[key] ||= []).push({ date, result, time: h["タイム"], last3f: h["上がり3F"], ninki: h["人気"], money, league: "NAR" });
   });
   Object.values(map).forEach((runs) => runs.sort((a, b) => (a.date < b.date ? 1 : -1)));
   return map;
@@ -194,7 +272,8 @@ function buildHistoryMap(rows: Record<string, string>[], prizeLookup: Record<str
 function mergeRaces(
   { racelist, horselist, odds = [], payback = [] }: RaceFiles,
   targetDate: string,
-  historyMap: Record<string, PastRun[]>
+  historyMap: Record<string, PastRun[]>,
+  jraHistoryMap: Record<string, PastRun[]>
 ) {
   const races = racelist.filter((r) => r["競走年月日"] === targetDate);
   const keyOf = (venue: string, no: string) => `${venue}_${no}`;
@@ -230,7 +309,10 @@ function mergeRaces(
         .sort((a, b) => Number(a["馬番"]) - Number(b["馬番"]))
         .map((h) => {
           const liveOdds = oddsByKey[key]?.[h["馬番"]];
-          const pastRaces = (historyMap[horseKey(h["馬名"], h["生年月日"])] || []).slice(0, 5);
+          const hKey = horseKey(h["馬名"], h["生年月日"]);
+          const pastRaces = [...(historyMap[hKey] || []), ...(jraHistoryMap[hKey] || [])]
+            .sort((a, b) => (a.date < b.date ? 1 : -1))
+            .slice(0, 5);
           return {
             waku: Number(h["枠番"]),
             umaban: Number(h["馬番"]),
@@ -305,5 +387,10 @@ async function getRacesForDate(dateStr: string) {
   const prizeLookup = buildPrizeLookup(historyRaceRows);
   const historyMap = buildHistoryMap(historyHorseRows, prizeLookup, dateStr);
 
-  return mergeRaces(files, dateStr, historyMap);
+  const entrants = files.horselist
+    .filter((h) => h["競走年月日"] === dateStr)
+    .map((h) => ({ name: h["馬名"], birth: h["生年月日"] }));
+  const jraHistoryMap = await fetchJraHistoryMap(entrants);
+
+  return mergeRaces(files, dateStr, historyMap, jraHistoryMap);
 }

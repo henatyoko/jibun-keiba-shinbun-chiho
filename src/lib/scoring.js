@@ -43,9 +43,17 @@ export function baseScoreFromOverall(overallStr) {
 // 1着賞金が10万円台〜(交流重賞は数千万円)とJRAよりずっと下のレンジなので、
 // 30万円のレース勝ち≒+3点、100万円≒+7点、1000万円級の重賞≒+14点になるよう調整している
 // (jibun側のように大量の実戦データで検証した値ではなく、レース格の相場観からの初期値)。
-function moneyPoint(yen) {
+function moneyPointNar(yen) {
   if (!Number.isFinite(yen) || yen <= 0) return null;
   return Math.max(-2, Math.min(16, (Math.log10(yen) - 5) * 7));
+}
+
+// JRAは賞金レンジが地方より1〜2桁大きいため、jibun-keiba-shinbun(scoring.js)の
+// moneyPointと同じ式を使う(500万円≒+5点、4000万円≒+11点、1億円≒+14点)。
+// JRAから転入した馬の過去走(pastRacesにleague:"JRA"で混ざる)に使う。
+function moneyPointJra(yen) {
+  if (!Number.isFinite(yen) || yen <= 0) return null;
+  return Math.max(-2, Math.min(16, (Math.log10(yen) - 6) * 7));
 }
 
 // 賞金額が取れない(該当レースが見つからない等)時のフォールバック。着順だけの簡易点。
@@ -58,7 +66,7 @@ function financePointFromFinish(finish) {
 }
 
 function pointForPastRun(r) {
-  const money = moneyPoint(r.money);
+  const money = r.league === "JRA" ? moneyPointJra(r.money) : moneyPointNar(r.money);
   if (money != null) return money;
   return financePointFromFinish(Number(r.result));
 }
@@ -178,8 +186,9 @@ export function scoreRace(race) {
     if (handicap) applied.push(handicap);
 
     const bonus = applied.reduce((sum, a) => sum + a.score, 0);
-    const recentForm = (h.pastRaces || []).slice(0, 5).map((r) => r.result);
-    return { ...h, base, bonus, total: base + bonus, applied, hasData: usedPastRaces || Boolean(overall.rec), usedPastRaces, recentForm };
+    const recentForm = (h.pastRaces || []).slice(0, 5).map((r) => ({ result: r.result, league: r.league }));
+    const hasJraHistory = (h.pastRaces || []).some((r) => r.league === "JRA");
+    return { ...h, base, bonus, total: base + bonus, applied, hasData: usedPastRaces || Boolean(overall.rec), usedPastRaces, recentForm, hasJraHistory };
   });
 
   scored.sort((a, b) => b.total - a.total);
