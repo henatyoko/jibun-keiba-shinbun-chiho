@@ -3,7 +3,10 @@
 // 月次ファイルを突き合わせて、各馬の直近走(pastRaces、最大5走・新しい順)を
 // 拾い集めて渡してくる。ここではその直近走を使い、無ければ通算成績
 // (全成績・当場成績・うち当距離成績。X-X-X-X=1着-2着-3着-着外)にフォールバックする。
-// 市場の単勝オッズ・人気は意図的に見ない(独自の評価をするのがこのアプリの狙いのため)。
+// 市場の単勝人気は、他の補正と同程度の重み(±3点程度)で小さく加味する。地方競馬は
+// 中央よりオッズ形成に馬主・厩舎など近い筋の資金が混じりやすく、市場自体が独自の
+// 情報(気配・調教等、このアプリが持たない情報)を織り込んでいると考えられるため
+// (marketSignalAdjustment)。ただし主役はあくまで直近走・クラス変動などの独自評価。
 
 export const MARKS = ["◎", "○", "▲", "△", "穴"];
 
@@ -223,6 +226,18 @@ export function classChangeAdjustment(currentClassRank, pastRaces) {
   return { label: diff > 0 ? "クラス格下げ" : "クラス格上げ", score };
 }
 
+// 単勝人気(ninki)を頭数で正規化し、1番人気ほど加点・人気薄ほど減点する。
+// 他の補正と同じ±3点程度のスケールに収め、あくまで小さな一味付けに留める
+// (人気だけで◎○▲が決まってしまわないように)。
+export function marketSignalAdjustment(ninki, headCount) {
+  const n = Number(ninki);
+  if (!Number.isFinite(n) || n <= 0 || !Number.isFinite(headCount) || headCount <= 1) return null;
+  const percentile = (n - 1) / (headCount - 1); // 0=1番人気, 1=最下位人気
+  const score = Math.round((0.5 - percentile) * 6);
+  if (score === 0) return null;
+  return { label: `人気${n}/${headCount}`, score };
+}
+
 // レース1つ分の出走馬全頭を採点し、合計点(total)の高い順に並べて返す。
 export function scoreRace(race) {
   const isHandicap = /ハンデ/.test(race.entryCondition || "");
@@ -247,6 +262,8 @@ export function scoreRace(race) {
     if (handicap) applied.push(handicap);
     const classChange = classChangeAdjustment(currentClassRank, h.pastRaces);
     if (classChange) applied.push(classChange);
+    const market = marketSignalAdjustment(h.ninki, race.headCount);
+    if (market) applied.push(market);
 
     const bonus = applied.reduce((sum, a) => sum + a.score, 0);
     const recentForm = (h.pastRaces || []).slice(0, 5).map((r) => ({ result: r.result, league: r.league }));
