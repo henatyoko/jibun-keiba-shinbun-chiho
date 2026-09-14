@@ -278,10 +278,17 @@ export function scoreRace(race) {
 
 // スコア済みの馬一覧(rank, total, hasData, appliedを持つ)から印を判定する。
 // ◎○▲はスコア上位固定、△は3位との得点差が僅かな馬(最大4頭まで)、
-// 穴は「得点は低いが加点材料がある馬」の中で最高得点の馬に付ける。
+// 穴は「人気が無いのに独自材料(市場人気を除く)ではプラスが付いている馬」に付ける。
 // 出走馬全員が無印(初出走かつ補正材料も無し)の時は、印を一切付けない。
 const TRIANGLE_THRESHOLD = 3;
 const MAX_TRIANGLE = 4;
+// 穴の対象は人気が下位40%より後ろの馬に限定する(◎で漏れた上位人気馬が
+// 穴に紛れ込むのを防ぐため。的中しても妙味が薄い人気馬は穴として出さない)。
+const ANA_NINKI_PERCENTILE_THRESHOLD = 0.4;
+
+function nonMarketBonus(h) {
+  return h.applied.filter((a) => !a.label.startsWith("人気")).reduce((sum, a) => sum + a.score, 0);
+}
 
 export function computeMarks(scored) {
   const noDifferentiation = scored.every((h) => !h.hasData && h.applied.length === 0);
@@ -306,10 +313,17 @@ export function computeMarks(scored) {
     });
   }
 
-  const anaCandidates = byRank.filter((h) => !marks[h.umaban] && h.applied.some((a) => a.score > 0));
+  const anaCandidates = byRank.filter((h) => {
+    if (marks[h.umaban]) return false;
+    const ninki = Number(h.ninki);
+    if (!Number.isFinite(ninki) || scored.length < 2) return false;
+    const percentile = (ninki - 1) / (scored.length - 1); // 0=1番人気, 1=最下位人気
+    if (percentile < ANA_NINKI_PERCENTILE_THRESHOLD) return false; // 人気上位〜中位は対象外
+    return nonMarketBonus(h) > 0;
+  });
   if (anaCandidates.length > 0) {
-    const bestTotal = Math.max(...anaCandidates.map((h) => h.total));
-    anaCandidates.filter((h) => h.total === bestTotal).forEach((h) => {
+    const bestBonus = Math.max(...anaCandidates.map(nonMarketBonus));
+    anaCandidates.filter((h) => nonMarketBonus(h) === bestBonus).forEach((h) => {
       marks[h.umaban] = MARKS[4];
     });
   }
