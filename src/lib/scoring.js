@@ -238,6 +238,16 @@ export function marketSignalAdjustment(ninki, headCount) {
   return { label: `人気${n}/${headCount}`, score };
 }
 
+// JRA(中央)で実際に出走した経験がある馬(pastRacesにleague:"JRA"が混ざっている馬。
+// 調教師の所属ではなく馬自身の実戦経験)は、たとえ未勝利でもJRA全体のレベルの高さ
+// から地方限定の馬より地力が高いと考えられるため、直近走の重み付けとは別軸で
+// 小さく加点する。
+export function jraExperienceAdjustment(pastRaces) {
+  const hasJra = (pastRaces || []).some((r) => r.league === "JRA");
+  if (!hasJra) return null;
+  return { label: "JRA実戦経験あり", score: 2 };
+}
+
 // レース1つ分の出走馬全頭を採点し、合計点(total)の高い順に並べて返す。
 export function scoreRace(race) {
   const isHandicap = /ハンデ/.test(race.entryCondition || "");
@@ -264,6 +274,8 @@ export function scoreRace(race) {
     if (classChange) applied.push(classChange);
     const market = marketSignalAdjustment(h.ninki, race.headCount);
     if (market) applied.push(market);
+    const jraExperience = jraExperienceAdjustment(h.pastRaces);
+    if (jraExperience) applied.push(jraExperience);
 
     const bonus = applied.reduce((sum, a) => sum + a.score, 0);
     const recentForm = (h.pastRaces || []).slice(0, 5).map((r) => ({ result: r.result, league: r.league }));
