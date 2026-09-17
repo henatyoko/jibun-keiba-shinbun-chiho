@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "export-history": "node scripts/export-history.mjs"
+    "export-history": "node scripts/export-history.mjs",
+    "backtest": "node scripts/backtest.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",
