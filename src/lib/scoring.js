@@ -3,10 +3,11 @@
 // 月次ファイルを突き合わせて、各馬の直近走(pastRaces、最大5走・新しい順)を
 // 拾い集めて渡してくる。ここではその直近走を使い、無ければ通算成績
 // (全成績・当場成績・うち当距離成績。X-X-X-X=1着-2着-3着-着外)にフォールバックする。
-// 市場の単勝人気は、他の補正と同程度の重み(±3点程度)で小さく加味する。地方競馬は
-// 中央よりオッズ形成に馬主・厩舎など近い筋の資金が混じりやすく、市場自体が独自の
-// 情報(気配・調教等、このアプリが持たない情報)を織り込んでいると考えられるため
-// (marketSignalAdjustment)。ただし主役はあくまで直近走・クラス変動などの独自評価。
+// 市場の単勝オッズ・人気は意図的に見ない(独自の評価をするのがこのアプリの狙いのため)。
+// 一時期、地方は中央より市場に近い筋の資金が混じりやすいだろうという想定で人気を
+// 小さく加点していたが、実際に使ってみると「当たっているのはオッズの低い堅い馬券
+// ばかり」になり、人気をなぞっているだけで独自の判断としての意味が薄かったため撤回した。
+// 人気(ninki)の情報自体は穴(値幅馬)の対象を絞り込む用途にだけ引き続き使う。
 
 export const MARKS = ["◎", "○", "▲", "△", "穴"];
 
@@ -226,18 +227,6 @@ export function classChangeAdjustment(currentClassRank, pastRaces) {
   return { label: diff > 0 ? "クラス格下げ" : "クラス格上げ", score };
 }
 
-// 単勝人気(ninki)を頭数で正規化し、1番人気ほど加点・人気薄ほど減点する。
-// 他の補正と同じ±3点程度のスケールに収め、あくまで小さな一味付けに留める
-// (人気だけで◎○▲が決まってしまわないように)。
-export function marketSignalAdjustment(ninki, headCount) {
-  const n = Number(ninki);
-  if (!Number.isFinite(n) || n <= 0 || !Number.isFinite(headCount) || headCount <= 1) return null;
-  const percentile = (n - 1) / (headCount - 1); // 0=1番人気, 1=最下位人気
-  const score = Math.round((0.5 - percentile) * 6);
-  if (score === 0) return null;
-  return { label: `人気${n}/${headCount}`, score };
-}
-
 // JRA(中央)で実際に出走した経験がある馬(pastRacesにleague:"JRA"が混ざっている馬。
 // 調教師の所属ではなく馬自身の実戦経験)は、たとえ未勝利でもJRA全体のレベルの高さ
 // から地方限定の馬より地力が高いと考えられるため、直近走の重み付けとは別軸で
@@ -272,8 +261,6 @@ export function scoreRace(race) {
     if (handicap) applied.push(handicap);
     const classChange = classChangeAdjustment(currentClassRank, h.pastRaces);
     if (classChange) applied.push(classChange);
-    const market = marketSignalAdjustment(h.ninki, race.headCount);
-    if (market) applied.push(market);
     const jraExperience = jraExperienceAdjustment(h.pastRaces);
     if (jraExperience) applied.push(jraExperience);
 
@@ -290,7 +277,7 @@ export function scoreRace(race) {
 
 // スコア済みの馬一覧(rank, total, hasData, appliedを持つ)から印を判定する。
 // ◎○▲はスコア上位固定、△は3位との得点差が僅かな馬(最大4頭まで)、
-// 穴は「人気が無いのに独自材料(市場人気を除く)ではプラスが付いている馬」に付ける。
+// 穴は「人気が無いのに独自材料ではプラスが付いている馬」に付ける。
 // 出走馬全員が無印(初出走かつ補正材料も無し)の時は、印を一切付けない。
 const TRIANGLE_THRESHOLD = 3;
 const MAX_TRIANGLE = 4;
@@ -298,8 +285,8 @@ const MAX_TRIANGLE = 4;
 // 穴に紛れ込むのを防ぐため。的中しても妙味が薄い人気馬は穴として出さない)。
 const ANA_NINKI_PERCENTILE_THRESHOLD = 0.4;
 
-function nonMarketBonus(h) {
-  return h.applied.filter((a) => !a.label.startsWith("人気")).reduce((sum, a) => sum + a.score, 0);
+function ownBonus(h) {
+  return h.applied.reduce((sum, a) => sum + a.score, 0);
 }
 
 export function computeMarks(scored) {
@@ -331,11 +318,11 @@ export function computeMarks(scored) {
     if (!Number.isFinite(ninki) || scored.length < 2) return false;
     const percentile = (ninki - 1) / (scored.length - 1); // 0=1番人気, 1=最下位人気
     if (percentile < ANA_NINKI_PERCENTILE_THRESHOLD) return false; // 人気上位〜中位は対象外
-    return nonMarketBonus(h) > 0;
+    return ownBonus(h) > 0;
   });
   if (anaCandidates.length > 0) {
-    const bestBonus = Math.max(...anaCandidates.map(nonMarketBonus));
-    anaCandidates.filter((h) => nonMarketBonus(h) === bestBonus).forEach((h) => {
+    const bestBonus = Math.max(...anaCandidates.map(ownBonus));
+    anaCandidates.filter((h) => ownBonus(h) === bestBonus).forEach((h) => {
       marks[h.umaban] = MARKS[4];
     });
   }
