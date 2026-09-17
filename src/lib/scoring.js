@@ -69,22 +69,35 @@ function financePointFromFinish(finish) {
   return Math.max(-2, 1 - (finish - 4) * 0.5);
 }
 
-// その1走が「人気(市場の期待値)に対してどうだったか」で加減点する。人気薄なのに
-// 好走したサプライズは高評価、逆に人気だったのに着外に沈んだのは大きな減点にする
-// (単なる着順・賞金の絶対値だけでは、人気馬なりの凡走と穴馬の好走を区別できないため)。
-// 実際のオッズ倍率までは保存していない(月次オッズファイルは巨大なため取得していない)
-// ので、人気の順位を代用値として使う簡易版。
-function surprisePoint(finish, ninki) {
+// その1走が「人気(市場の期待値)に対してどうだったか」で加減点する。単勝オッズが
+// 取れている場合(2026年3月以降のレース。nar_race_history.tansho_odds)はオッズの
+// 対数を使い、勝った場合はオッズが高いほど(人気薄の勝利ほど)高評価、負けた場合は
+// オッズが低かった(本命だった)のに着外だったケースほど大きく減点する。オッズが
+// 無い古いレースは、人気順位を代用値にした簡易版にフォールバックする。
+function oddsSurprisePoint(finish, odds) {
+  const f = Number(finish);
+  const o = Number(odds);
+  if (!Number.isFinite(f) || f <= 0 || !Number.isFinite(o) || o <= 0) return null;
+  const expectedRank = Math.max(1, Math.log10(o) * 4 + 1);
+  return Math.max(-4, Math.min(4, (expectedRank - f) * 0.6));
+}
+
+function ninkiSurprisePoint(finish, ninki) {
   const f = Number(finish);
   const n = Number(ninki);
   if (!Number.isFinite(f) || f <= 0 || !Number.isFinite(n) || n <= 0) return 0;
   return Math.max(-3, Math.min(3, (n - f) * 0.5));
 }
 
+function surprisePoint(r) {
+  const odds = oddsSurprisePoint(r.result, r.odds);
+  return odds != null ? odds : ninkiSurprisePoint(r.result, r.ninki);
+}
+
 function pointForPastRun(r) {
   const money = r.league === "JRA" ? moneyPointJra(r.money) : moneyPointNar(r.money);
   const base = money != null ? money : financePointFromFinish(Number(r.result));
-  return base + surprisePoint(r.result, r.ninki);
+  return base + surprisePoint(r);
 }
 
 function dateStrToMs(dateStr) {
