@@ -69,10 +69,22 @@ function financePointFromFinish(finish) {
   return Math.max(-2, 1 - (finish - 4) * 0.5);
 }
 
+// その1走が「人気(市場の期待値)に対してどうだったか」で加減点する。人気薄なのに
+// 好走したサプライズは高評価、逆に人気だったのに着外に沈んだのは大きな減点にする
+// (単なる着順・賞金の絶対値だけでは、人気馬なりの凡走と穴馬の好走を区別できないため)。
+// 実際のオッズ倍率までは保存していない(月次オッズファイルは巨大なため取得していない)
+// ので、人気の順位を代用値として使う簡易版。
+function surprisePoint(finish, ninki) {
+  const f = Number(finish);
+  const n = Number(ninki);
+  if (!Number.isFinite(f) || f <= 0 || !Number.isFinite(n) || n <= 0) return 0;
+  return Math.max(-3, Math.min(3, (n - f) * 0.5));
+}
+
 function pointForPastRun(r) {
   const money = r.league === "JRA" ? moneyPointJra(r.money) : moneyPointNar(r.money);
-  if (money != null) return money;
-  return financePointFromFinish(Number(r.result));
+  const base = money != null ? money : financePointFromFinish(Number(r.result));
+  return base + surprisePoint(r.result, r.ninki);
 }
 
 function dateStrToMs(dateStr) {
