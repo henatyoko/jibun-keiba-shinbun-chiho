@@ -176,6 +176,44 @@ export function distanceFitAdjustment(distanceStr, overallRec) {
   return fitAdjustment("当距離", distanceStr, overallRec, 1.2);
 }
 
+// jockeyStats(CSVの「騎手成績」)は騎手自身の通算成績ではなく、「この馬にこの騎手が
+// 乗った時だけの成績」(同日に同じ騎手が別の馬に乗っていても値が異なることで確認済み)。
+// つまり人気が上がる理由の一つである「得意コンビ」「乗り替わりの良し悪し」を直接表す
+// 値なので、当場/当距離と同じ考え方(馬の通算成績を基準にした好走率の差分)で補正する。
+export function jockeyFitAdjustment(jockeyStatsStr, overallRec) {
+  return fitAdjustment("同騎手", jockeyStatsStr, overallRec, 1.5);
+}
+
+// 父馬・母父馬ごとの産駒成績(nar_sire_stats/nar_damsire_stats、Edge Function側で
+// その日の対象馬の父/母父だけバッチ取得して渡ってくる)を見る。競走馬自身の実績が
+// まだ少ない(デビュー間もない・未勝利が続いている等)ほど、市場は血統的な期待値
+// (良血統だから人気、というやつ)で評価している比重が大きいと考えられるため、
+// 自身の出走数が増えるほどこの補正はフェードさせ、実際の着順の方を優先させる。
+// 産駒サンプルが少ない父馬・母父馬(30頭未満)はノイズが大きいため評価しない。
+const PEDIGREE_MIN_PROGENY = 30;
+function pedigreeSideRate(stats) {
+  if (!stats || stats.starts < PEDIGREE_MIN_PROGENY) return null;
+  const rec = { win: stats.win, place: stats.place, show: stats.show, other: stats.other, starts: stats.starts };
+  return top3Rate(rec);
+}
+
+export function pedigreeFitAdjustment(sireStats, damsireStats, horseOwnStarts) {
+  const sireRate = pedigreeSideRate(sireStats);
+  const damsireRate = pedigreeSideRate(damsireStats);
+  if (sireRate == null && damsireRate == null) return null;
+
+  const sireScore = sireRate != null ? (sireRate - 0.3) * 12 : 0;
+  const damsireScore = damsireRate != null ? (damsireRate - 0.3) * 12 : 0;
+  const weightSum = (sireRate != null ? 0.6 : 0) + (damsireRate != null ? 0.4 : 0);
+  if (weightSum === 0) return null;
+  const raw = (sireScore * 0.6 + damsireScore * 0.4) / weightSum;
+
+  const fade = Math.max(0, Math.min(1, 1 - (horseOwnStarts ?? 0) / 8));
+  const score = Math.max(-3, Math.min(3, Math.round(raw * fade)));
+  if (score === 0) return null;
+  return { label: "血統適性", score };
+}
+
 // 馬体重の大きな増減(±15kg以上)は仕上がりへの不安材料として小さく減点する。
 export function bodyWeightAdjustment(diffStr) {
   const diff = Number(diffStr);
@@ -280,6 +318,10 @@ export function scoreRace(race) {
     if (track) applied.push(track);
     const distance = distanceFitAdjustment(h.distanceStats, overall.rec);
     if (distance) applied.push(distance);
+    const jockeyFit = jockeyFitAdjustment(h.jockeyStats, overall.rec);
+    if (jockeyFit) applied.push(jockeyFit);
+    const pedigree = pedigreeFitAdjustment(h.sireStats, h.damsireStats, overall.rec?.starts ?? 0);
+    if (pedigree) applied.push(pedigree);
     const bodyWeight = bodyWeightAdjustment(h.bodyWeightDiff);
     if (bodyWeight) applied.push(bodyWeight);
     const handicap = handicapWeightAdjustment(isHandicap, parseWeight(h.weight), fieldAvgWeight);

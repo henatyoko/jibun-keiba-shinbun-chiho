@@ -248,6 +248,49 @@ async function fetchNarHistoryMap(entrants: { name: string; birth: string }[], b
   }
 }
 
+type PedigreeStats = { starts: number; win: number; place: number; show: number; other: number };
+
+// 父馬名・母父馬名ごとに集計した産駒成績(nar_sire_stats/nar_damsire_stats。
+// scripts/backfill-pedigree.mjsで過去のhorselist CSVから作成・投入済み)を、
+// その日の出走馬に登場する父馬・母父馬名だけバッチ取得する。産駒自身の実績が
+// 薄い馬(デビュー間もない等)を血統面から評価する材料として使う(scoring.js側)。
+async function fetchPedigreeStats(sireNames: string[], damsireNames: string[]): Promise<{
+  sireStatsByName: Record<string, PedigreeStats>;
+  damsireStatsByName: Record<string, PedigreeStats>;
+}> {
+  const fetchStats = async (table: string, column: string, names: string[]) => {
+    const uniqueNames = [...new Set(names.filter(Boolean))];
+    if (uniqueNames.length === 0) return {};
+    const result: Record<string, PedigreeStats> = {};
+    for (let i = 0; i < uniqueNames.length; i += 100) {
+      const batch = uniqueNames.slice(i, i + 100);
+      const inList = batch.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(",");
+      const rows = await supabaseSelect(table, `${column}=in.(${encodeURIComponent(inList)})&select=*`);
+      rows.forEach((r) => {
+        result[r[column]] = {
+          starts: Number(r.starts) || 0,
+          win: Number(r.win) || 0,
+          place: Number(r.place) || 0,
+          show: Number(r.show) || 0,
+          other: Number(r.other) || 0,
+        };
+      });
+    }
+    return result;
+  };
+
+  try {
+    const [sireStatsByName, damsireStatsByName] = await Promise.all([
+      fetchStats("nar_sire_stats", "sire", sireNames),
+      fetchStats("nar_damsire_stats", "damsire", damsireNames),
+    ]);
+    return { sireStatsByName, damsireStatsByName };
+  } catch (err) {
+    console.error("pedigree stats lookup failed:", err);
+    return { sireStatsByName: {}, damsireStatsByName: {} };
+  }
+}
+
 async function fetchDaily(): Promise<RaceFiles> {
   const [raceFiles, oddsFiles] = await Promise.all([
     downloadZip(`${BASE}/RaceDataDownload?type=daily`),
@@ -323,6 +366,8 @@ async function saveTodayResultsToHistory(
         shokin,
         race_name: info?.name || null,
         tansho_odds: odds ? Number(odds) : null,
+        sire: h["父馬名"] || null,
+        damsire: h["母父馬名"] || null,
       };
     })
     .filter((r): r is NonNullable<typeof r> => r !== null);
@@ -334,7 +379,9 @@ function mergeRaces(
   { racelist, horselist, odds = [], payback = [] }: RaceFiles,
   targetDate: string,
   historyMap: Record<string, PastRun[]>,
-  jraHistoryMap: Record<string, PastRun[]>
+  jraHistoryMap: Record<string, PastRun[]>,
+  sireStatsByName: Record<string, PedigreeStats>,
+  damsireStatsByName: Record<string, PedigreeStats>
 ) {
   const races = racelist.filter((r) => r["競走年月日"] === targetDate);
   const keyOf = (venue: string, no: string) => `${venue}_${no}`;
@@ -397,6 +444,8 @@ function mergeRaces(
             trackStats: h["当競馬場成績"],
             distanceStats: h["うち当距離成績"],
             bestTime: h["最高タイム"],
+            sireStats: sireStatsByName[h["父馬名"]] || null,
+            damsireStats: damsireStatsByName[h["母父馬名"]] || null,
             odds: liveOdds?.odds || null,
             ninki: liveOdds?.ninki || h["人気"] || null,
             result: h["着順"] || null,
@@ -440,12 +489,23 @@ async function getRacesForDate(dateStr: string) {
   const targetHorselistRows = files.horselist.filter((h) => h["競走年月日"] === dateStr);
   const entrants = targetHorselistRows.map((h) => ({ name: h["馬名"], birth: h["生年月日"] }));
 
-  const [historyMap, jraHistoryMap] = await Promise.all([
+  const [historyMap, jraHistoryMap, pedigreeStats] = await Promise.all([
     fetchNarHistoryMap(entrants, dateStr),
     fetchJraHistoryMap(entrants),
+    fetchPedigreeStats(
+      targetHorselistRows.map((h) => h["父馬名"]),
+      targetHorselistRows.map((h) => h["母父馬名"])
+    ),
   ]);
 
-  const races = mergeRaces(files, dateStr, historyMap, jraHistoryMap);
+  const races = mergeRaces(
+    files,
+    dateStr,
+    historyMap,
+    jraHistoryMap,
+    pedigreeStats.sireStatsByName,
+    pedigreeStats.damsireStatsByName
+  );
 
   // 確定した結果をDBに書き足す(次回以降この日を過去走として引けるようにする)。
   // Edge Functionはレスポンスを返すとバックグラウンド処理が打ち切られることがあるため、
