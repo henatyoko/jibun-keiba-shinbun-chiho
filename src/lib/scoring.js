@@ -3,11 +3,14 @@
 // 月次ファイルを突き合わせて、各馬の直近走(pastRaces、最大5走・新しい順)を
 // 拾い集めて渡してくる。ここではその直近走を使い、無ければ通算成績
 // (全成績・当場成績・うち当距離成績。X-X-X-X=1着-2着-3着-着外)にフォールバックする。
-// 市場の単勝オッズ・人気は意図的に見ない(独自の評価をするのがこのアプリの狙いのため)。
-// 一時期、地方は中央より市場に近い筋の資金が混じりやすいだろうという想定で人気を
-// 小さく加点していたが、実際に使ってみると「当たっているのはオッズの低い堅い馬券
-// ばかり」になり、人気をなぞっているだけで独自の判断としての意味が薄かったため撤回した。
-// 人気(ninki)の情報自体は穴(値幅馬)の対象を絞り込む用途にだけ引き続き使う。
+//
+// 過去には「市場の人気・オッズは意図的に見ない、独自の評価だけで勝負する」方針だったが、
+// 実測(◎が市場の1番人気と違う馬を指した時の勝率9.7%、1番人気をそのまま買った時の
+// 勝率44.8%)で、独自ロジック単体では市場の精度に遠く及ばないことが分かった。市場の
+// 人気には、パドックの気配・調教師のコメント・当日の細かい変化などCSVに出てこない
+// 情報も織り込まれていると考えられる。そのため人気を「土台」に据え、そこに騎手コンビ・
+// 血統・クラス変動・当場当距離適性・過去走の内容などの独自材料を補正として上乗せする
+// 方式に変更した(人気そのものをなぞるだけにならないよう、補正の上限は小さめに抑えている)。
 
 export const MARKS = ["◎", "○", "▲", "△", "穴"];
 
@@ -33,12 +36,17 @@ function parseWeight(weightStr) {
 // (デビュー戦・1走だけの馬が極端な点にならないようにするため)。
 // pastRacesが無い馬(過去走が今月+前月の月次ファイルに見つからなかった馬)向けの
 // フォールバック用。
+// 実測では人気1位グループと人気7位以下グループの平均baseスコア差がわずか4点程度しか
+// 出ておらず(倍率30のまま)、その差より各種補正(騎手コンビ・当場当距離等、単体で
+// ±3〜4点)の方が大きく効いてしまい、市場が正しく評価している実力差を補正が
+// 簡単に覆してしまっていた。実力差がスコアにもっとしっかり反映されるよう倍率を上げる。
+const OVERALL_SENSITIVITY = 120;
 export function baseScoreFromOverall(overallStr) {
   const rec = parseRecord(overallStr);
   if (!rec || rec.starts === 0) return { score: 70, rec: null };
   const rate = top3Rate(rec);
   const shrink = Math.min(rec.starts / 8, 1);
-  const raw = (rate - 0.3) * 30;
+  const raw = (rate - 0.3) * OVERALL_SENSITIVITY;
   return { score: Math.round(70 + raw * shrink), rec };
 }
 
@@ -100,6 +108,16 @@ function pointForPastRun(r) {
   return base + surprisePoint(r);
 }
 
+// 市場の人気順位を基礎点に変換する。人気1位を100点とし、順位が下がるほど対数的に
+// 減衰させる(実際の勝率も人気順位に対してほぼ対数的に減っていくため)。K=15は
+// 実測データ(直近60日の人気グループ別勝率)に大きく反しない範囲で選んだ初期値。
+const NINKI_BASE_DECAY = 15;
+export function baseScoreFromNinki(ninki) {
+  const n = Number(ninki);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return 100 - Math.log2(n) * NINKI_BASE_DECAY;
+}
+
 function dateStrToMs(dateStr) {
   if (!dateStr || dateStr.length < 8) return null;
   const y = Number(dateStr.slice(0, 4));
@@ -111,6 +129,7 @@ function dateStrToMs(dateStr) {
 // 過去走の重みは「直近何走目か」ではなく「レース日からの実日数」で決める(半減期60日)。
 // 間隔が開くほど自然に過去走の重みが下がるため、休養明けの文脈も反映できる。
 const RECENCY_HALF_LIFE_DAYS = 60;
+const PAST_RACE_SENSITIVITY = 8;
 
 // 直近走(最大5走・新しい順)から基礎点を算出する。(1)獲得賞金からその1走の価値を
 // 点数化(レースの格・着順の良さを両方反映)、(2)レース日が近いほど重みを付ける
@@ -137,8 +156,9 @@ export function baseScoreFromPastRaces(pastRaces, currentDateStr) {
 
   if (weightTotal === 0) return null;
   const shrink = Math.min(sampleCount / 5, 1);
-  let avg = (weightedSum / weightTotal) * shrink;
+  const avg = (weightedSum / weightTotal) * shrink;
 
+  let agariBonus = 0;
   const agariTimes = pastRaces
     .slice(0, 5)
     .map((r) => Number(r.last3f))
@@ -147,10 +167,27 @@ export function baseScoreFromPastRaces(pastRaces, currentDateStr) {
     const [latest, ...rest] = agariTimes;
     const restAvg = rest.reduce((sum, v) => sum + v, 0) / rest.length;
     const improve = restAvg - latest; // 正なら直近の方が上がりが速い(良化)
-    avg += Math.max(-2, Math.min(2, improve * 2));
+    agariBonus = Math.max(-2, Math.min(2, improve * 2));
   }
 
-  return Math.round(70 + avg * 2);
+  // 人気1位グループと7位以下グループの平均base差が実測4点程度しかなく、単体で
+  // ±3〜4点動く各種補正に実力差が簡単に覆されていたため、感度を上げる
+  // (上がり3Fの改善ボーナスはサンプルが薄い(最大2走比較)ので、増幅の対象外にして
+  // そのまま最終点に加える)。
+  return Math.round(70 + avg * PAST_RACE_SENSITIVITY + agariBonus);
+}
+
+// 基礎点を人気(市場)に切り替えたことに伴い、旧来の「過去走から出した絶対点」は
+// そのままだと市場の判断と二重に競合してしまう。70を中心とした差分に変換し、
+// 他の補正と同じ規模(上限±6)に抑えた「独自材料の1つ」として扱う。
+const PAST_PERFORMANCE_CAP = 6;
+export function pastPerformanceAdjustment(pastRaces, overallStr, currentDateStr) {
+  const pastBase = baseScoreFromPastRaces(pastRaces, currentDateStr);
+  const overall = baseScoreFromOverall(overallStr);
+  const raw = pastBase != null ? pastBase : overall.score;
+  const score = Math.max(-PAST_PERFORMANCE_CAP, Math.min(PAST_PERFORMANCE_CAP, Math.round(raw - 70)));
+  if (score === 0) return null;
+  return { label: "過去走評価", score };
 }
 
 // 当場/当距離の成績が、その馬の通算成績(基準)より良い/悪いかで補正する。
@@ -311,9 +348,14 @@ export function scoreRace(race) {
     const overall = baseScoreFromOverall(h.overallStats);
     const pastBase = baseScoreFromPastRaces(h.pastRaces, race.date);
     const usedPastRaces = pastBase != null;
-    const base = usedPastRaces ? pastBase : overall.score;
+    const ninkiBase = baseScoreFromNinki(h.ninki);
+    // 市場(人気)を土台にする。人気が取れない場合(オッズ未確定のごく一部のケース)は
+    // 従来通り過去走/通算成績ベースの点にフォールバックする。
+    const base = ninkiBase != null ? ninkiBase : usedPastRaces ? pastBase : overall.score;
     const applied = [];
 
+    const pastPerformance = pastPerformanceAdjustment(h.pastRaces, h.overallStats, race.date);
+    if (pastPerformance) applied.push(pastPerformance);
     const track = trackFitAdjustment(h.trackStats, overall.rec);
     if (track) applied.push(track);
     const distance = distanceFitAdjustment(h.distanceStats, overall.rec);
@@ -334,7 +376,8 @@ export function scoreRace(race) {
     const bonus = applied.reduce((sum, a) => sum + a.score, 0);
     const recentForm = (h.pastRaces || []).slice(0, 5).map((r) => ({ result: r.result, league: r.league }));
     const hasJraHistory = (h.pastRaces || []).some((r) => r.league === "JRA");
-    return { ...h, base, bonus, total: base + bonus, applied, hasData: usedPastRaces || Boolean(overall.rec), usedPastRaces, recentForm, hasJraHistory };
+    const hasData = ninkiBase != null || usedPastRaces || Boolean(overall.rec);
+    return { ...h, base, bonus, total: base + bonus, applied, hasData, usedPastRaces, recentForm, hasJraHistory };
   });
 
   scored.sort((a, b) => b.total - a.total);
