@@ -115,7 +115,7 @@ const NINKI_BASE_DECAY = 15;
 export function baseScoreFromNinki(ninki) {
   const n = Number(ninki);
   if (!Number.isFinite(n) || n <= 0) return null;
-  return 100 - Math.log2(n) * NINKI_BASE_DECAY;
+  return Math.round(100 - Math.log2(n) * NINKI_BASE_DECAY);
 }
 
 function dateStrToMs(dateStr) {
