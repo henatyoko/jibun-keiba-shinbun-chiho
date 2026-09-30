@@ -6,6 +6,7 @@ import { formatDate, shiftDate, todayStr } from "./lib/date";
 import { PAPER, PAPER_CARD, INK, MUTED, MINT } from "./lib/colors";
 import Masthead from "./components/Masthead";
 import RaceCard from "./components/RaceCard";
+import RaceList from "./components/RaceList";
 
 function LoadingOverlay() {
   return (
@@ -20,9 +21,9 @@ function LoadingOverlay() {
   );
 }
 
-// レース1つ分の画面(/:date/:venue/:raceNumber)。パラメータが省略されていたり
-// その日に存在しない値の時は、実際のデータから決まる正しいURLへリダイレクトする
-// (常に完全なURLでシェア・ブックマークできるようにするため)。
+// レース一覧画面(/:date/:venue)とレース1つ分の画面(/:date/:venue/:raceNumber)。
+// パラメータが省略されていたりその日に存在しない値の時は、実際のデータから決まる
+// 正しいURLへリダイレクトする(常に完全なURLでシェア・ブックマークできるようにするため)。
 function MeetingView() {
   const { date: paramDate, venue: paramVenue, raceNumber: paramRaceNumber } = useParams();
   const navigate = useNavigate();
@@ -45,16 +46,15 @@ function MeetingView() {
   const venues = useMemo(() => [...new Set(races.map((r) => r.venue))], [races]);
   const canonicalVenue = venues.includes(paramVenue) ? paramVenue : venues[0];
   const racesAtVenue = useMemo(() => races.filter((r) => r.venue === canonicalVenue), [races, canonicalVenue]);
-  const canonicalRaceNumber = racesAtVenue.some((r) => String(r.raceNumber) === paramRaceNumber)
-    ? paramRaceNumber
-    : racesAtVenue[0] != null
-      ? String(racesAtVenue[0].raceNumber)
-      : undefined;
-  const selectedRace = racesAtVenue.find((r) => String(r.raceNumber) === canonicalRaceNumber);
+  const selectedRace =
+    paramRaceNumber != null ? racesAtVenue.find((r) => String(r.raceNumber) === paramRaceNumber) : null;
 
   if (!loading && !error && venues.length > 0) {
-    if (!paramDate || paramVenue !== canonicalVenue || paramRaceNumber !== canonicalRaceNumber) {
-      return <Navigate to={`/${date}/${canonicalVenue}/${canonicalRaceNumber}`} replace />;
+    if (!paramDate || paramVenue !== canonicalVenue) {
+      return <Navigate to={`/${date}/${canonicalVenue}`} replace />;
+    }
+    if (paramRaceNumber != null && !selectedRace) {
+      return <Navigate to={`/${date}/${canonicalVenue}`} replace />;
     }
   }
 
@@ -65,7 +65,7 @@ function MeetingView() {
       <div className="max-w-md mx-auto relative pb-24" style={{ background: PAPER, minHeight: "100vh" }}>
         <div className="px-4 pt-4">
           {loading && <LoadingOverlay />}
-          {!loading && !error && races.length > 0 && (
+          {!loading && !error && races.length > 0 && !selectedRace && (
             <p className="text-xs mb-3" style={{ color: MUTED }}>
               通算成績・直近走ベースの自動採点で表示
             </p>
@@ -83,44 +83,56 @@ function MeetingView() {
 
           {venues.length > 0 && (
             <div className="flex gap-1.5 flex-wrap mb-2">
-              {venues.map((v) => {
-                const firstRaceNumber = races.find((r) => r.venue === v)?.raceNumber;
-                return (
+              {venues.map((v) => (
+                <button
+                  key={v}
+                  onClick={() => navigate(`/${date}/${v}`)}
+                  className="px-3 py-1.5 text-xs font-bold"
+                  style={{
+                    background: v === canonicalVenue ? INK : "transparent",
+                    color: v === canonicalVenue ? PAPER_CARD : INK,
+                    border: `1px solid ${INK}`,
+                  }}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {!loading && !error && racesAtVenue.length > 0 && (
+            selectedRace ? (
+              <>
+                <div className="flex items-center gap-2 mb-3">
                   <button
-                    key={v}
-                    onClick={() => navigate(`/${date}/${v}/${firstRaceNumber}`)}
-                    className="px-3 py-1.5 text-xs font-bold"
-                    style={{
-                      background: v === canonicalVenue ? INK : "transparent",
-                      color: v === canonicalVenue ? PAPER_CARD : INK,
-                      border: `1px solid ${INK}`,
-                    }}
+                    onClick={() => navigate(`/${date}/${canonicalVenue}`)}
+                    className="text-xs font-bold shrink-0"
+                    style={{ color: INK }}
                   >
-                    {v}
+                    ← 一覧へ戻る
                   </button>
-                );
-              })}
-            </div>
+                  <select
+                    value={selectedRace.raceNumber}
+                    onChange={(e) => navigate(`/${date}/${canonicalVenue}/${e.target.value}`)}
+                    className="px-2 py-1.5 text-sm font-bold"
+                    style={{ color: INK, border: `1px solid ${INK}`, background: PAPER_CARD }}
+                  >
+                    {racesAtVenue.map((r) => (
+                      <option key={r.id} value={r.raceNumber}>
+                        {r.raceNumber}R
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <RaceCard race={selectedRace} />
+              </>
+            ) : (
+              <RaceList
+                races={racesAtVenue}
+                onSelect={(r) => navigate(`/${date}/${canonicalVenue}/${r.raceNumber}`)}
+              />
+            )
           )}
-
-          {racesAtVenue.length > 0 && (
-            <div className="mb-3">
-              <select
-                value={canonicalRaceNumber}
-                onChange={(e) => navigate(`/${date}/${canonicalVenue}/${e.target.value}`)}
-                className="px-2 py-2 text-sm font-bold"
-                style={{ color: INK, border: `1px solid ${INK}`, background: PAPER_CARD }}
-              >
-                {racesAtVenue.map((r) => (
-                  <option key={r.id} value={r.raceNumber}>
-                    {r.raceNumber}R
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          <RaceCard race={selectedRace} />
         </div>
       </div>
 

@@ -8,14 +8,24 @@ import WakuBadge from "./WakuBadge";
 export default function RaceCard({ race }) {
   const scored = useMemo(() => (race ? scoreRace(race) : []), [race]);
   const { marksByUmaban, noDifferentiation } = useMemo(() => computeMarks(scored), [scored]);
-  // 印(◎○▲△穴)をまとめて3連複BOXで買ったと仮定した時の的中判定。
-  // 実際の上位3着が全員印の中に入っていればBOX的中(頭数・買い目の並びは問わない)。
+  // 印(◎○▲△穴)をまとめてBOXで買ったと仮定した時の的中判定。
+  // 上位3着が全員印の中に入っていれば3連複BOX的中、2頭だけならワイドBOX的中
+  // (上位3着のうちどの2頭の組み合わせでもよい)。不的中は表示不要のためnull。
   const boxHit = useMemo(() => {
     if (noDifferentiation) return null;
     const top3 = scored.filter((h) => h.result && Number(h.result) <= 3);
     if (top3.length < 3) return null;
-    return top3.every((h) => Boolean(marksByUmaban[h.umaban]));
+    const hitCount = top3.filter((h) => Boolean(marksByUmaban[h.umaban])).length;
+    if (hitCount === 3) return "trifecta";
+    if (hitCount === 2) return "wide";
+    return null;
   }, [scored, marksByUmaban, noDifferentiation]);
+  // ◎の馬が単勝的中(1着)したかどうかの判定。
+  const tanshoHit = useMemo(() => {
+    const honshi = scored.find((h) => marksByUmaban[h.umaban] === MARKS[0]);
+    if (!honshi || !honshi.result) return false;
+    return Number(honshi.result) === 1;
+  }, [scored, marksByUmaban]);
 
   if (!race) return null;
   const surfaceLabel = race.surface && race.distance ? `${race.surface}${race.distance}m${race.turn ? `(${race.turn})` : ""}` : "";
@@ -28,20 +38,24 @@ export default function RaceCard({ race }) {
           {formatPostTime(race.postTime)}発走
         </span>
       </div>
-      <div className="flex items-center gap-2 mb-1">
+      <div className="flex items-center gap-2 mb-1 flex-wrap">
         <h1 className="text-xl font-bold" style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}>
           {race.name || race.kind}
         </h1>
+        {tanshoHit && (
+          <span
+            className="text-[0.625rem] font-bold px-1.5 py-0.5 shrink-0"
+            style={{ color: PAPER_CARD, background: RED, border: `1px solid ${RED}` }}
+          >
+            単勝的中
+          </span>
+        )}
         {boxHit != null && (
           <span
             className="text-[0.625rem] font-bold px-1.5 py-0.5 shrink-0"
-            style={{
-              color: boxHit ? PAPER_CARD : MUTED,
-              background: boxHit ? RED : "transparent",
-              border: `1px solid ${boxHit ? RED : MUTED}`,
-            }}
+            style={{ color: PAPER_CARD, background: RED, border: `1px solid ${RED}` }}
           >
-            {boxHit ? "3連複BOX的中" : "3連複BOX不的中"}
+            {boxHit === "trifecta" ? "3連複BOX的中" : "ワイドBOX的中"}
           </span>
         )}
       </div>
