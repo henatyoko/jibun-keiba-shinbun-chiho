@@ -18,7 +18,7 @@ export default function Masthead({ subtitle }) {
                 className="text-2xl font-black tracking-wide"
                 style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}
               >
-                じぶん競馬新聞　地方版
+                じぶん競馬新聞地方版
               </h1>
               <div className="text-[0.625rem] ml-0.5" style={{ color: INK, opacity: 0.7 }}>
                 {subtitle}
