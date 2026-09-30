@@ -104,21 +104,19 @@ function MeetingView() {
           )}
 
           {racesAtVenue.length > 0 && (
-            <div className="flex gap-1 flex-wrap mb-3">
-              {racesAtVenue.map((r) => (
-                <button
-                  key={r.id}
-                  onClick={() => navigate(`/${date}/${canonicalVenue}/${r.raceNumber}`)}
-                  className="px-2.5 py-1 text-xs font-semibold"
-                  style={{
-                    background: String(r.raceNumber) === canonicalRaceNumber ? PAPER_CARD : "transparent",
-                    color: INK,
-                    border: `1px solid ${String(r.raceNumber) === canonicalRaceNumber ? INK : MUTED}`,
-                  }}
-                >
-                  {r.raceNumber}R
-                </button>
-              ))}
+            <div className="mb-3">
+              <select
+                value={canonicalRaceNumber}
+                onChange={(e) => navigate(`/${date}/${canonicalVenue}/${e.target.value}`)}
+                className="px-2 py-2 text-sm font-bold"
+                style={{ color: INK, border: `1px solid ${INK}`, background: PAPER_CARD }}
+              >
+                {racesAtVenue.map((r) => (
+                  <option key={r.id} value={r.raceNumber}>
+                    {r.raceNumber}R
+                  </option>
+                ))}
+              </select>
             </div>
           )}
 

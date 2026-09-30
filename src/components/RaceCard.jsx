@@ -8,6 +8,14 @@ import WakuBadge from "./WakuBadge";
 export default function RaceCard({ race }) {
   const scored = useMemo(() => (race ? scoreRace(race) : []), [race]);
   const { marksByUmaban, noDifferentiation } = useMemo(() => computeMarks(scored), [scored]);
+  // 印(◎○▲△穴)をまとめて3連複BOXで買ったと仮定した時の的中判定。
+  // 実際の上位3着が全員印の中に入っていればBOX的中(頭数・買い目の並びは問わない)。
+  const boxHit = useMemo(() => {
+    if (noDifferentiation) return null;
+    const top3 = scored.filter((h) => h.result && Number(h.result) <= 3);
+    if (top3.length < 3) return null;
+    return top3.every((h) => Boolean(marksByUmaban[h.umaban]));
+  }, [scored, marksByUmaban, noDifferentiation]);
 
   if (!race) return null;
   const surfaceLabel = race.surface && race.distance ? `${race.surface}${race.distance}m${race.turn ? `(${race.turn})` : ""}` : "";
@@ -20,9 +28,23 @@ export default function RaceCard({ race }) {
           {formatPostTime(race.postTime)}発走
         </span>
       </div>
-      <h1 className="text-xl font-bold mb-1" style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}>
-        {race.name || race.kind}
-      </h1>
+      <div className="flex items-center gap-2 mb-1">
+        <h1 className="text-xl font-bold" style={{ color: INK, fontFamily: "'Shippori Mincho', serif" }}>
+          {race.name || race.kind}
+        </h1>
+        {boxHit != null && (
+          <span
+            className="text-[0.625rem] font-bold px-1.5 py-0.5 shrink-0"
+            style={{
+              color: boxHit ? PAPER_CARD : MUTED,
+              background: boxHit ? RED : "transparent",
+              border: `1px solid ${boxHit ? RED : MUTED}`,
+            }}
+          >
+            {boxHit ? "3連複BOX的中" : "3連複BOX不的中"}
+          </span>
+        )}
+      </div>
       <p className="text-xs mb-3" style={{ color: MUTED }}>
         {race.venue}{race.raceNumber}R・{surfaceLabel}
         {race.entryCondition ? `・${race.entryCondition}` : ""}
