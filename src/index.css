@@ -14,10 +14,25 @@
   --font-body: "Zen Old Mincho", "Shippori Mincho", serif;
 }
 
+/* 老眼対応。remを使っている文字サイズ(Tailwindのtext-xs等)はすべて
+   このルート基準で20%大きくなる。中央版(jibun-keiba-shinbun)と揃えている。 */
+html {
+  font-size: 120%;
+}
+
 body {
   margin: 0;
   background: var(--paper);
   font-family: var(--font-body);
+}
+
+/* iOSのSafariはinput等のfont-sizeが16px未満だとフォーカス時に自動ズームし、
+   横スクロール可能な状態になってしまう。フォーカス時ズームを避けるため
+   フォーム要素は常に16px以上にする(Tailwindのtext-smなどを上書き)。 */
+input,
+select,
+textarea {
+  font-size: 16px !important;
 }
 
 @keyframes horse-bob {
