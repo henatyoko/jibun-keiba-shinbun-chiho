@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useLayoutEffect, useMemo } from "react";
 import { formatPostTime, formatRaceTime } from "../lib/date";
 import { PAPER_CARD, INK, RED, MUTED, LINE, MARKS } from "../lib/colors";
 import { scoreRace, computeMarks } from "../lib/scoring";
@@ -26,6 +26,12 @@ export default function RaceCard({ race }) {
     if (!honshi || !honshi.result) return false;
     return Number(honshi.result) === 1;
   }, [scored, marksByUmaban]);
+
+  // 一覧でスクロールした状態からレースを開いた時、前の位置が一瞬見えないよう
+  // 描画前にページ先頭へ戻す(中央版と同様)。
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+  }, [race?.id]);
 
   if (!race) return null;
   const surfaceLabel = race.surface && race.distance ? `${race.surface}${race.distance}m${race.turn ? `(${race.turn})` : ""}` : "";
