@@ -5,6 +5,18 @@ import { scoreRace, computeMarks } from "../lib/scoring";
 import GradeChip from "./GradeChip";
 import WakuBadge from "./WakuBadge";
 
+const BABA_LABELS = ["良", "稍重", "重", "不良"];
+
+function formatBabaRecord(rec) {
+  if (!rec) return "―";
+  const starts = rec.win + rec.place + rec.show + rec.other;
+  return starts === 0 ? "―" : `${rec.win}-${rec.place}-${rec.show}-${rec.other}`;
+}
+
+function hasAnyBabaRecord(babaStats) {
+  return BABA_LABELS.some((b) => formatBabaRecord(babaStats?.[b]) !== "―");
+}
+
 export default function RaceCard({ race }) {
   const scored = useMemo(() => (race ? scoreRace(race) : []), [race]);
   const { marksByUmaban, noDifferentiation } = useMemo(() => computeMarks(scored), [scored]);
@@ -130,6 +142,20 @@ export default function RaceCard({ race }) {
                     全成績{h.overallStats || "―"}・当場{h.trackStats || "―"}・当距離{h.distanceStats || "―"}
                     {h.bodyWeight ? `・馬体重${h.bodyWeight}kg${h.bodyWeightDiff ? `(${h.bodyWeightDiff})` : ""}` : ""}
                   </div>
+                  {hasAnyBabaRecord(h.babaStats) && (
+                    <div className="text-[0.625rem] mt-0.5 flex items-center gap-x-2 flex-wrap" style={{ color: MUTED }}>
+                      <span>馬場別:</span>
+                      {BABA_LABELS.map((b) => {
+                        const isToday = race.condition === b;
+                        return (
+                          <span key={b} className={isToday ? "font-bold" : ""} style={{ color: isToday ? INK : MUTED, textDecoration: isToday ? "underline" : "none" }}>
+                            {b}
+                            {formatBabaRecord(h.babaStats?.[b])}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
                   {h.recentForm?.length > 0 && (
                     <div className="text-[0.625rem] mt-0.5 flex items-center gap-1" style={{ color: MUTED }}>
                       <span>近{h.recentForm.length}走:</span>

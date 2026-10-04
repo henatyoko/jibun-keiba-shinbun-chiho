@@ -106,7 +106,7 @@ type RaceFiles = {
   odds?: Record<string, string>[];
 };
 
-type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string; money: number; league: "NAR" | "JRA"; raceName?: string; odds?: number | null };
+type PastRun = { date: string; result: string; time: string; last3f: string; ninki: string; money: number; league: "NAR" | "JRA"; raceName?: string; odds?: number | null; baba?: string };
 
 async function supabaseSelect(table: string, params: string): Promise<Record<string, string>[]> {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return [];
@@ -219,7 +219,7 @@ async function fetchNarHistoryMap(entrants: { name: string; birth: string }[], b
     for (let i = 0; i < uniqueNames.length; i += 100) {
       const batch = uniqueNames.slice(i, i + 100);
       const inList = batch.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(",");
-      const params = `bamei=in.(${encodeURIComponent(inList)})&race_date=lt.${beforeDate}&select=bamei,seinengappi,race_date,chakujun,time,agari_3f,ninki,shokin,race_name,tansho_odds&order=race_date.desc&limit=1000`;
+      const params = `bamei=in.(${encodeURIComponent(inList)})&race_date=lt.${beforeDate}&select=bamei,seinengappi,race_date,chakujun,time,agari_3f,ninki,shokin,race_name,tansho_odds,baba&order=race_date.desc&limit=1000`;
       const batchRows = await supabaseSelect("nar_race_history", params);
       rows.push(...batchRows);
     }
@@ -238,6 +238,7 @@ async function fetchNarHistoryMap(entrants: { name: string; birth: string }[], b
         league: "NAR",
         raceName: r["race_name"] || "",
         odds: r["tansho_odds"] != null ? Number(r["tansho_odds"]) : null,
+        baba: r["baba"] || "",
       });
     });
     Object.values(map).forEach((arr) => arr.sort((a, b) => (a.date < b.date ? 1 : -1)));
@@ -318,13 +319,14 @@ async function fetchMonthly(year: number, month: number): Promise<RaceFiles> {
 // レース一覧から「そのレースの着順ごとの賞金額」+「レース名」の索引を作る。
 // レース名にはクラス表記(例:Ｃ２－５組、Ｂ４－５)が入っているため、クラス変動の
 // 判定材料として保存しておく(パース自体はフロント側のscoring.jsで行う)。
-function buildRaceInfoLookup(racelistRows: Record<string, string>[]): Record<string, { prizes: number[]; name: string }> {
-  const map: Record<string, { prizes: number[]; name: string }> = {};
+function buildRaceInfoLookup(racelistRows: Record<string, string>[]): Record<string, { prizes: number[]; name: string; baba: string }> {
+  const map: Record<string, { prizes: number[]; name: string; baba: string }> = {};
   racelistRows.forEach((r) => {
     const key = raceKeyOf(r["競馬場"], r["競走年月日"], r["レース番号"]);
     map[key] = {
       prizes: [1, 2, 3, 4, 5].map((n) => Number(r[`${n}着賞金(円)`]) || 0),
       name: r["レース名"] || "",
+      baba: r["馬場"] || "",
     };
   });
   return map;
@@ -335,7 +337,7 @@ function buildRaceInfoLookup(racelistRows: Record<string, string>[]): Record<str
 // オッズも一緒に書き込む(過去走の「人気とのギャップ」を後で正確に評価できるように)。
 async function saveTodayResultsToHistory(
   horselistRows: Record<string, string>[],
-  raceInfoLookup: Record<string, { prizes: number[]; name: string }>,
+  raceInfoLookup: Record<string, { prizes: number[]; name: string; baba: string }>,
   targetDate: string,
   oddsRows: Record<string, string>[]
 ) {
@@ -365,6 +367,7 @@ async function saveTodayResultsToHistory(
         ninki: h["人気"] || null,
         shokin,
         race_name: info?.name || null,
+        baba: info?.baba || null,
         tansho_odds: odds ? Number(odds) : null,
         sire: h["父馬名"] || null,
         damsire: h["母父馬名"] || null,
@@ -373,6 +376,26 @@ async function saveTodayResultsToHistory(
     .filter((r): r is NonNullable<typeof r> => r !== null);
 
   await supabaseUpsert("nar_race_history", rows);
+}
+
+const BABA_LABELS = ["良", "稍重", "重", "不良"] as const;
+
+// 馬場状態(良/稍重/重/不良)ごとの過去成績(1着-2着-3着-着外)を集計する。
+// 直近5走だけでなく、DBに溜まっている地方の全過去走が対象(馬場別は標本が少なく
+// なりがちなため)。ばんえいの水分率など4区分以外の値は集計から除外する。
+function buildBabaStats(narRuns: PastRun[]): Record<string, { win: number; place: number; show: number; other: number }> {
+  const stats: Record<string, { win: number; place: number; show: number; other: number }> = {};
+  BABA_LABELS.forEach((b) => (stats[b] = { win: 0, place: 0, show: 0, other: 0 }));
+  narRuns.forEach((r) => {
+    const s = r.baba && stats[r.baba];
+    if (!s) return;
+    const f = Number(r.result);
+    if (f === 1) s.win++;
+    else if (f === 2) s.place++;
+    else if (f === 3) s.show++;
+    else if (f > 3) s.other++;
+  });
+  return stats;
 }
 
 function mergeRaces(
@@ -418,6 +441,7 @@ function mergeRaces(
         .map((h) => {
           const liveOdds = oddsByKey[key]?.[h["馬番"]];
           const hKey = horseKey(h["馬名"], h["生年月日"]);
+          const babaStats = buildBabaStats(historyMap[hKey] || []);
           const pastRaces = [...(historyMap[hKey] || []), ...(jraHistoryMap[hKey] || [])]
             .sort((a, b) => (a.date < b.date ? 1 : -1))
             .slice(0, 5);
@@ -453,6 +477,7 @@ function mergeRaces(
             margin: h["着差"] || null,
             last3f: h["上がり3F"] || null,
             pastRaces,
+            babaStats,
           };
         });
 
