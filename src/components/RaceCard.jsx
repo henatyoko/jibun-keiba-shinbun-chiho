@@ -175,7 +175,7 @@ export default function RaceCard({ race }) {
                     {h.total}
                   </div>
                   <div className="text-[0.5625rem]" style={{ color: MUTED }}>
-                    {h.hasData ? `基礎${h.base}${h.usedPastRaces ? "(近走)" : "(通算)"}` : "基礎データなし"}
+                    {h.hasData ? `勝率予測${Math.round(h.winProb * 100)}%` : "データなし"}
                   </div>
                 </div>
               </div>

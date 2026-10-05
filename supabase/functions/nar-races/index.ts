@@ -292,6 +292,41 @@ async function fetchPedigreeStats(sireNames: string[], damsireNames: string[]): 
   }
 }
 
+type PersonAgg = { n: number; win: number; top3: number };
+
+// 騎手・調教師ごとの「対象日より前」の通算成績(出走数・勝利数・3着内数)を取得する。
+// nar_race_historyを集計するDB関数(RPC)を使うので、過去日を開いた時もその日の
+// 結果を含まない(リークしない)値になる。学習済みモデルの特徴量として使う。
+async function fetchPersonStats(beforeDate: string, jockeys: string[], trainers: string[]): Promise<{
+  jockeyAgg: Record<string, PersonAgg>;
+  trainerAgg: Record<string, PersonAgg>;
+}> {
+  const call = async (fn: string, names: string[]) => {
+    const unique = [...new Set(names.filter(Boolean))];
+    const out: Record<string, PersonAgg> = {};
+    if (!unique.length || !SUPABASE_URL || !SUPABASE_ANON_KEY) return out;
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ p_date: beforeDate, p_names: unique }),
+    });
+    if (!res.ok) return out;
+    const rows: { name: string; n: number | string; win: number | string; top3: number | string }[] = await res.json();
+    rows.forEach((r) => (out[r.name] = { n: Number(r.n) || 0, win: Number(r.win) || 0, top3: Number(r.top3) || 0 }));
+    return out;
+  };
+  try {
+    const [jockeyAgg, trainerAgg] = await Promise.all([
+      call("nar_jockey_stats_before", jockeys),
+      call("nar_trainer_stats_before", trainers),
+    ]);
+    return { jockeyAgg, trainerAgg };
+  } catch (err) {
+    console.error("person stats lookup failed:", err);
+    return { jockeyAgg: {}, trainerAgg: {} };
+  }
+}
+
 async function fetchDaily(): Promise<RaceFiles> {
   const [raceFiles, oddsFiles] = await Promise.all([
     downloadZip(`${BASE}/RaceDataDownload?type=daily`),
@@ -368,6 +403,8 @@ async function saveTodayResultsToHistory(
         shokin,
         race_name: info?.name || null,
         baba: info?.baba || null,
+        jockey: h["騎手名"] || null,
+        trainer: h["調教師"] || null,
         tansho_odds: odds ? Number(odds) : null,
         sire: h["父馬名"] || null,
         damsire: h["母父馬名"] || null,
@@ -404,7 +441,9 @@ function mergeRaces(
   historyMap: Record<string, PastRun[]>,
   jraHistoryMap: Record<string, PastRun[]>,
   sireStatsByName: Record<string, PedigreeStats>,
-  damsireStatsByName: Record<string, PedigreeStats>
+  damsireStatsByName: Record<string, PedigreeStats>,
+  jockeyAgg: Record<string, PersonAgg>,
+  trainerAgg: Record<string, PersonAgg>
 ) {
   const races = racelist.filter((r) => r["競走年月日"] === targetDate);
   const keyOf = (venue: string, no: string) => `${venue}_${no}`;
@@ -478,6 +517,8 @@ function mergeRaces(
             last3f: h["上がり3F"] || null,
             pastRaces,
             babaStats,
+            jockeyAgg: jockeyAgg[h["騎手名"]] || null,
+            trainerAgg: trainerAgg[h["調教師"]] || null,
           };
         });
 
@@ -514,12 +555,17 @@ async function getRacesForDate(dateStr: string) {
   const targetHorselistRows = files.horselist.filter((h) => h["競走年月日"] === dateStr);
   const entrants = targetHorselistRows.map((h) => ({ name: h["馬名"], birth: h["生年月日"] }));
 
-  const [historyMap, jraHistoryMap, pedigreeStats] = await Promise.all([
+  const [historyMap, jraHistoryMap, pedigreeStats, personStats] = await Promise.all([
     fetchNarHistoryMap(entrants, dateStr),
     fetchJraHistoryMap(entrants),
     fetchPedigreeStats(
       targetHorselistRows.map((h) => h["父馬名"]),
       targetHorselistRows.map((h) => h["母父馬名"])
+    ),
+    fetchPersonStats(
+      dateStr,
+      targetHorselistRows.map((h) => h["騎手名"]),
+      targetHorselistRows.map((h) => h["調教師"])
     ),
   ]);
 
@@ -529,7 +575,9 @@ async function getRacesForDate(dateStr: string) {
     historyMap,
     jraHistoryMap,
     pedigreeStats.sireStatsByName,
-    pedigreeStats.damsireStatsByName
+    pedigreeStats.damsireStatsByName,
+    personStats.jockeyAgg,
+    personStats.trainerAgg
   );
 
   // 確定した結果をDBに書き足す(次回以降この日を過去走として引けるようにする)。
