@@ -387,13 +387,13 @@ export function scoreRace(race) {
 
 // スコア済みの馬一覧(rank, total, hasData, appliedを持つ)から印を判定する。
 // ◎○▲はスコア上位固定、△は3位との得点差が僅かな馬(最大4頭まで)、
-// 穴は「人気が無いのに独自材料ではプラスが付いている馬」に付ける。
+// 穴は「◎○▲△に入らなかった馬のうち、独自材料でプラスが付いている馬」に付ける。
 // 出走馬全員が無印(初出走かつ補正材料も無し)の時は、印を一切付けない。
 const TRIANGLE_THRESHOLD = 3;
 const MAX_TRIANGLE = 4;
-// 穴の対象は人気が下位40%より後ろの馬に限定する(◎で漏れた上位人気馬が
-// 穴に紛れ込むのを防ぐため。的中しても妙味が薄い人気馬は穴として出さない)。
-const ANA_NINKI_PERCENTILE_THRESHOLD = 0.4;
+// 穴の候補に人気の制限は設けない。90日分(3,907レース)の検証で、人気が下位40%より
+// 後ろに限定した場合(複勝率19.4%・複勝回収率70.9%)より、制限なしの方が
+// 複勝率22.5%・複勝回収率74.4%と良く、直近30日と前半60日の両方で同じ向きだった。
 
 function ownBonus(h) {
   return h.applied.reduce((sum, a) => sum + a.score, 0);
@@ -424,10 +424,6 @@ export function computeMarks(scored) {
 
   const anaCandidates = byRank.filter((h) => {
     if (marks[h.umaban]) return false;
-    const ninki = Number(h.ninki);
-    if (!Number.isFinite(ninki) || scored.length < 2) return false;
-    const percentile = (ninki - 1) / (scored.length - 1); // 0=1番人気, 1=最下位人気
-    if (percentile < ANA_NINKI_PERCENTILE_THRESHOLD) return false; // 人気上位〜中位は対象外
     return ownBonus(h) > 0;
   });
   if (anaCandidates.length > 0) {
